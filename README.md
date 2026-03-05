@@ -105,7 +105,7 @@ sequenceDiagram
         T->>D: GET /liveview.jpg
         D-->>T: JPEG bytes
         T-->>LV: base64 string
-        LV->>LV: <img src="data:image/jpeg;base64,...">
+        LV->>LV: renders frame in img tag
     end
 
     U->>LV: click Stop
