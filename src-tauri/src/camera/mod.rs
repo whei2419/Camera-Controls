@@ -1,24 +1,75 @@
-// Camera abstraction using libgphoto2 (open-source, no SDK download required)
-// Install: brew install libgphoto2
+// Camera abstraction using DigiCamControl (Windows, open-source, no SDK required)
+// Install DigiCamControl from: https://digicamcontrol.com/
+// Enable "WebServer" plugin in DigiCamControl → Plugins and ensure it runs on port 5513.
 
-use gphoto2::{Camera, Context};
+use base64::Engine;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+
+const DC_BASE: &str = "http://localhost:5513";
 
 // ── Error type ────────────────────────────────────────────────────────────────
 #[derive(Debug, thiserror::Error, Serialize)]
 pub enum CameraError {
     #[error("{0}")]
-    Gphoto(String),
+    Http(String),
+    #[error("DigiCamControl is not running. Start it and enable the WebServer plugin.")]
+    NotRunning,
     #[error("No camera connected")]
     NoCamera,
     #[error("Live view not active")]
     LiveViewOff,
 }
 
-impl From<gphoto2::Error> for CameraError {
-    fn from(e: gphoto2::Error) -> Self {
-        CameraError::Gphoto(e.to_string())
+impl From<reqwest::Error> for CameraError {
+    fn from(e: reqwest::Error) -> Self {
+        if e.is_connect() {
+            CameraError::NotRunning
+        } else {
+            CameraError::Http(e.to_string())
+        }
     }
+}
+
+// ── DigiCamControl session JSON shapes ────────────────────────────────────────
+#[derive(Debug, Deserialize, Default)]
+struct DcProp {
+    #[serde(rename = "Value", default)]
+    value: String,
+    #[serde(rename = "Values", default)]
+    values: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DcProperties {
+    #[serde(rename = "Iso", default)]
+    iso: DcProp,
+    #[serde(rename = "ShutterSpeed", default)]
+    shutter_speed: DcProp,
+    #[serde(rename = "Aperture", default)]
+    aperture: DcProp,
+    #[serde(rename = "WhiteBalance", default)]
+    white_balance: DcProp,
+    #[serde(rename = "Battery", default)]
+    battery: DcProp,
+}
+
+#[derive(Debug, Deserialize)]
+struct DcCamera {
+    #[serde(rename = "DisplayName", default)]
+    display_name: String,
+    #[serde(rename = "Port", default)]
+    port: String,
+    #[serde(rename = "Properties", default)]
+    properties: Option<DcProperties>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DcSession {
+    #[serde(rename = "ConnectedCamera")]
+    connected_camera: Option<DcCamera>,
+    #[serde(rename = "Cameras", default)]
+    cameras: Vec<DcCamera>,
 }
 
 // ── Data types shared with frontend ──────────────────────────────────────────
@@ -47,226 +98,177 @@ pub struct SettingOptions {
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
-// Stored in Tauri as tokio::sync::Mutex<CameraState> so async commands can
-// hold the lock across .await points without deadlocking.
 pub struct CameraState {
-    pub context: Context,
-    pub camera: Option<Camera>,
+    pub client: Client,
+    pub connected: bool,
     pub live_view: bool,
 }
 
-// SAFETY: libgphoto2 is not thread-safe by itself, but we serialise
-// every call through the tokio::sync::Mutex in AppState.
-unsafe impl Send for CameraState {}
-unsafe impl Sync for CameraState {}
-
 impl CameraState {
-    pub fn new() -> Result<Self, CameraError> {
-        let context = Context::new()?;
-        Ok(Self {
-            context,
-            camera: None,
+    pub fn new() -> Self {
+        Self {
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
+            connected: false,
             live_view: false,
-        })
+        }
     }
 }
 
-// ── Camera helpers ────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// List all cameras currently visible to libgphoto2.
+async fn fetch_session(client: &Client) -> Result<DcSession, CameraError> {
+    let url = format!("{DC_BASE}/session.json");
+    let text = client.get(&url).send().await?.text().await?;
+    serde_json::from_str::<DcSession>(&text)
+        .map_err(|e| CameraError::Http(format!("Parse error: {e} — response: {text}")))
+}
+
+async fn send_cmd(client: &Client, cmd: &str) -> Result<(), CameraError> {
+    client
+        .get(format!("{DC_BASE}/"))
+        .query(&[("CMD", cmd)])
+        .send()
+        .await?;
+    Ok(())
+}
+
+// ── Camera discovery ──────────────────────────────────────────────────────────
+
 pub async fn list_cameras(state: &CameraState) -> Result<Vec<CameraInfo>, CameraError> {
-    let list = state.context.list_cameras().await?;
-    let cameras = list
+    let session = fetch_session(&state.client).await?;
+    if session.cameras.is_empty() {
+        // Fallback: if a camera is actively connected, include it
+        if let Some(cam) = &session.connected_camera {
+            return Ok(vec![CameraInfo {
+                index: 0,
+                name: cam.display_name.clone(),
+                port: cam.port.clone(),
+            }]);
+        }
+    }
+    let cameras = session
+        .cameras
         .into_iter()
         .enumerate()
-        .map(|(i, desc)| CameraInfo {
+        .map(|(i, cam)| CameraInfo {
             index: i,
-            name: desc.model().to_string(),
-            port: desc.port().to_string(),
+            name: cam.display_name,
+            port: cam.port,
         })
         .collect();
     Ok(cameras)
 }
 
-/// Connect to the camera at `index` in the detected list.
+// ── Connection ────────────────────────────────────────────────────────────────
+
+/// "Connect" just verifies DigiCamControl has an active camera at that index
+/// and marks our state as connected.
 pub async fn connect(state: &mut CameraState, index: usize) -> Result<CameraInfo, CameraError> {
-    let list = state.context.list_cameras().await?;
-    let descs: Vec<_> = list.into_iter().collect();
-    let desc = descs.get(index).ok_or(CameraError::NoCamera)?;
-    let camera = state.context.get_camera(desc.model(), desc.port()).await?;
-    let info = CameraInfo {
-        index,
-        name: desc.model().to_string(),
-        port: desc.port().to_string(),
-    };
-    state.camera = Some(camera);
-    state.live_view = false;
+    let cameras = list_cameras(state).await?;
+    let info = cameras
+        .into_iter()
+        .find(|c| c.index == index)
+        .ok_or(CameraError::NoCamera)?;
+    state.connected = true;
     Ok(info)
 }
 
-/// Drop the active camera session.
 pub fn disconnect(state: &mut CameraState) {
-    state.camera = None;
+    state.connected = false;
     state.live_view = false;
 }
 
-// ── Config helpers ────────────────────────────────────────────────────────────
-
-/// Get the string value of a named config widget.
-async fn get_config_str(camera: &Camera, key: &str) -> String {
-    let Ok(config) = camera.config().await else {
-        return String::new();
-    };
-    let Ok(widget) = config.get_child_by_name(key) else {
-        return String::new();
-    };
-    widget_value_to_string(&widget)
-}
-
-/// Get the list of choices for a named radio/menu config widget.
-async fn get_config_choices(camera: &Camera, key: &str) -> Vec<String> {
-    let Ok(config) = camera.config().await else {
-        return vec![];
-    };
-    let Ok(widget) = config.get_child_by_name(key) else {
-        return vec![];
-    };
-    widget_choices(&widget)
-}
-
-/// Set a named config widget to the given string value and apply it.
-pub async fn set_config(state: &CameraState, key: &str, value: &str) -> Result<(), CameraError> {
-    let camera = state.camera.as_ref().ok_or(CameraError::NoCamera)?;
-    let config = camera.config().await?;
-    let widget = config
-        .get_child_by_name(key)
-        .map_err(|e| CameraError::Gphoto(e.to_string()))?;
-    string_to_widget_value(&widget, value).map_err(|e| CameraError::Gphoto(e.to_string()))?;
-    camera.set_config(&widget).await?;
-    Ok(())
-}
-
-// ── Widget value conversion ───────────────────────────────────────────────────
-
-fn widget_value_to_string(widget: &gphoto2::widget::Widget) -> String {
-    use gphoto2::widget::WidgetValue;
-    match widget.value() {
-        Ok(WidgetValue::Text(s)) => s,
-        Ok(WidgetValue::Radio(s)) => s,
-        Ok(WidgetValue::Menu(s)) => s,
-        Ok(WidgetValue::Range(f)) => format!("{f}"),
-        Ok(WidgetValue::Toggle(b)) => {
-            if b {
-                "On".into()
-            } else {
-                "Off".into()
-            }
-        }
-        Ok(WidgetValue::Date(n)) => format!("{n}"),
-        _ => String::new(),
-    }
-}
-
-fn widget_choices(widget: &gphoto2::widget::Widget) -> Vec<String> {
-    widget
-        .choices()
-        .map(|choices| choices.map(|(c, _)| c.to_string()).collect())
-        .unwrap_or_default()
-}
-
-fn string_to_widget_value(
-    widget: &gphoto2::widget::Widget,
-    value: &str,
-) -> Result<(), gphoto2::Error> {
-    use gphoto2::widget::WidgetType;
-    use gphoto2::widget::WidgetValue;
-    match widget.widget_type()? {
-        WidgetType::Radio | WidgetType::Menu => {
-            widget.set_value(WidgetValue::Radio(value.to_string()))
-        }
-        WidgetType::Text => widget.set_value(WidgetValue::Text(value.to_string())),
-        WidgetType::Range => {
-            if let Ok(f) = value.parse::<f32>() {
-                widget.set_value(WidgetValue::Range(f))
-            } else {
-                Ok(())
-            }
-        }
-        WidgetType::Toggle => {
-            let b = matches!(value, "1" | "true" | "On" | "on");
-            widget.set_value(WidgetValue::Toggle(b))
-        }
-        _ => Ok(()),
-    }
-}
-
-// ── Shooting settings ─────────────────────────────────────────────────────────
+// ── Settings ──────────────────────────────────────────────────────────────────
 
 pub async fn get_settings(state: &CameraState) -> Result<ShootingSettings, CameraError> {
-    let camera = state.camera.as_ref().ok_or(CameraError::NoCamera)?;
+    if !state.connected {
+        return Err(CameraError::NoCamera);
+    }
+    let session = fetch_session(&state.client).await?;
+    let cam = session.connected_camera.ok_or(CameraError::NoCamera)?;
+    let props = cam.properties.unwrap_or_default();
     Ok(ShootingSettings {
-        iso: get_config_str(camera, "iso").await,
-        aperture: get_config_str(camera, "aperture").await,
-        shutter_speed: get_config_str(camera, "shutterspeed").await,
-        white_balance: get_config_str(camera, "whitebalance").await,
-        battery: get_config_str(camera, "batterylevel").await,
+        iso: props.iso.value,
+        aperture: props.aperture.value,
+        shutter_speed: props.shutter_speed.value,
+        white_balance: props.white_balance.value,
+        battery: props.battery.value,
     })
 }
 
 pub async fn get_setting_options(state: &CameraState) -> Result<SettingOptions, CameraError> {
-    let camera = state.camera.as_ref().ok_or(CameraError::NoCamera)?;
+    if !state.connected {
+        return Err(CameraError::NoCamera);
+    }
+    let session = fetch_session(&state.client).await?;
+    let cam = session.connected_camera.ok_or(CameraError::NoCamera)?;
+    let props = cam.properties.unwrap_or_default();
     Ok(SettingOptions {
-        iso: get_config_choices(camera, "iso").await,
-        aperture: get_config_choices(camera, "aperture").await,
-        shutter_speed: get_config_choices(camera, "shutterspeed").await,
-        white_balance: get_config_choices(camera, "whitebalance").await,
+        iso: props.iso.values,
+        aperture: props.aperture.values,
+        shutter_speed: props.shutter_speed.values,
+        white_balance: props.white_balance.values,
     })
+}
+
+// ── Set individual settings ───────────────────────────────────────────────────
+
+pub async fn set_config(state: &CameraState, prop: &str, value: &str) -> Result<(), CameraError> {
+    if !state.connected {
+        return Err(CameraError::NoCamera);
+    }
+    state
+        .client
+        .get(format!("{DC_BASE}/"))
+        .query(&[("CMD", "SetProperty"), ("property", prop), ("value", value)])
+        .send()
+        .await?;
+    Ok(())
 }
 
 // ── Shutter ───────────────────────────────────────────────────────────────────
 
 pub async fn take_picture(state: &CameraState) -> Result<(), CameraError> {
-    let camera = state.camera.as_ref().ok_or(CameraError::NoCamera)?;
-    camera.capture_image().await?;
-    Ok(())
+    if !state.connected {
+        return Err(CameraError::NoCamera);
+    }
+    send_cmd(&state.client, "Capture").await
 }
 
 // ── Live view ─────────────────────────────────────────────────────────────────
 
 pub async fn start_live_view(state: &mut CameraState) -> Result<(), CameraError> {
-    let camera = state.camera.as_ref().ok_or(CameraError::NoCamera)?;
-    // Enable viewfinder / EVF output to PC via config
-    let _ = set_config_on_camera(camera, "viewfinder", "1").await;
-    // Some Canon bodies use "eosremoterelease" or "evfmode"
-    // gphoto2 handles this automatically on capture_preview
+    if !state.connected {
+        return Err(CameraError::NoCamera);
+    }
+    send_cmd(&state.client, "LiveViewWnd_Show").await?;
     state.live_view = true;
     Ok(())
 }
 
 pub async fn stop_live_view(state: &mut CameraState) -> Result<(), CameraError> {
-    if let Some(camera) = state.camera.as_ref() {
-        let _ = set_config_on_camera(camera, "viewfinder", "0").await;
+    if state.live_view {
+        let _ = send_cmd(&state.client, "LiveViewWnd_Hide").await;
     }
     state.live_view = false;
     Ok(())
 }
 
-/// Returns a single live-view frame as a base64-encoded JPEG string.
+/// Fetches `/liveview.jpg` from DigiCamControl and returns it as a
+/// base64-encoded JPEG string ready for `<img src="data:image/jpeg;base64,...">`.
 pub async fn capture_live_view_frame(state: &CameraState) -> Result<String, CameraError> {
     if !state.live_view {
         return Err(CameraError::LiveViewOff);
     }
-    let camera = state.camera.as_ref().ok_or(CameraError::NoCamera)?;
-    let file = camera.capture_preview().await?;
-    let data = file.get_data(&state.context).await?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
-}
-
-async fn set_config_on_camera(camera: &Camera, key: &str, value: &str) -> Result<(), CameraError> {
-    let config = camera.config().await?;
-    if let Ok(widget) = config.get_child_by_name(key) {
-        let _ = string_to_widget_value(&widget, value);
-        let _ = camera.set_config(&widget).await;
-    }
-    Ok(())
+    let bytes = state
+        .client
+        .get(format!("{DC_BASE}/liveview.jpg"))
+        .send()
+        .await?
+        .bytes()
+        .await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }

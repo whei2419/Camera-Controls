@@ -6,12 +6,9 @@ use commands::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let camera_state =
-        CameraState::new().expect("Failed to initialize libgphoto2 – run: brew install libgphoto2");
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::new(camera_state))
+        .manage(AppState::new(CameraState::new()))
         .invoke_handler(tauri::generate_handler![
             commands::list_cameras,
             commands::connect_camera,

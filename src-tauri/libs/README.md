@@ -1,23 +1,31 @@
-# Canon EDSDK Libraries
+# libs/
 
-Place the Canon EDSDK framework/library here before building.
+This folder is intentionally empty when using DigiCamControl.
 
-## macOS
+No SDK files or libraries are required. DigiCamControl communicates with the
+camera over USB and exposes a local HTTP REST API on port 5513 that this app
+talks to.
 
-Download `EDSDK.framework` from Canon's developer portal and place it in this directory:
+## Setup
 
-```
-src-tauri/libs/EDSDK.framework/
-```
+1. Download and install **DigiCamControl** (free, open-source, Windows only):
+   https://digicamcontrol.com/
 
-## Windows
+2. In DigiCamControl go to **Extra → Plugins** and enable **WebServer**.
 
-Place `EDSDK.dll` and `EDSDK_API.lib` in this directory:
+3. Restart DigiCamControl. The WebServer will start automatically on
+   `http://localhost:5513`.
 
-```
-src-tauri/libs/EDSDK.dll
-src-tauri/libs/EDSDK_API.lib
-```
+4. Connect your camera via USB and power it on.
+
+5. Launch this Tauri app. It will detect cameras through DigiCamControl.
+
+## Supported cameras
+
+DigiCamControl supports 700+ Canon and Nikon DSLR/mirrorless bodies, plus many
+other brands via WIA/Windows drivers. See the full list at:
+https://digicamcontrol.com/cameras
+
 
 ## Getting the SDK
 

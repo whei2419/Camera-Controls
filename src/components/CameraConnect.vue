@@ -51,7 +51,7 @@ onMounted(scan)
 
     <div v-if="cameras.length === 0 && !scanning" class="empty-state">
       <p>No cameras detected.</p>
-      <p class="hint">Connect your Canon camera via USB and make sure it is powered on.</p>
+      <p class="hint">Connect your camera via USB, power it on, and make sure DigiCamControl is running with the WebServer plugin enabled.</p>
     </div>
 
     <ul v-else class="camera-list">

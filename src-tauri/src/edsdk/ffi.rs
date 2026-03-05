@@ -99,7 +99,7 @@ pub type EdsStateEventHandler =
     extern "C" fn(inEvent: EdsUInt32, inEventData: EdsUInt32, inContext: *mut c_void) -> EdsError;
 
 // ── EDSDK function declarations ───────────────────────────────────────────────
-#[link(name = "EDSDK", kind = "framework")]
+#[link(name = "EDSDK")]
 extern "C" {
     pub fn EdsInitializeSDK() -> EdsError;
     pub fn EdsTerminateSDK() -> EdsError;
