@@ -248,5 +248,3 @@ body {
   font-size: 0.72rem;
 }
 </style>
-
-</style>
