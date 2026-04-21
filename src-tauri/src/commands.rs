@@ -111,3 +111,73 @@ pub async fn get_live_view_frame(state: State<'_, AppState>) -> Result<String, S
         .await
         .map_err(|e| e.to_string())
 }
+
+// ── File system helpers ───────────────────────────────────────────────────────
+
+/// List image/video files in `folder`, sorted newest-first (by modified time).
+/// `extensions` is e.g. ["jpg","jpeg","png","mp4","mkv"]
+#[tauri::command]
+pub async fn list_folder_files(
+    folder: String,
+    extensions: Vec<String>,
+) -> Result<Vec<String>, String> {
+    use std::fs;
+    use std::time::SystemTime;
+
+    let dir = fs::read_dir(&folder).map_err(|e| e.to_string())?;
+    let exts: Vec<String> = extensions.iter().map(|e| e.to_lowercase()).collect();
+
+    let mut entries: Vec<(SystemTime, String)> = dir
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if !path.is_file() {
+                return None;
+            }
+            let ext = path.extension()?.to_str()?.to_lowercase();
+            if !exts.contains(&ext) {
+                return None;
+            }
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, path.to_string_lossy().into_owned()))
+        })
+        .collect();
+
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(entries.into_iter().map(|(_, p)| p).collect())
+}
+
+// ── Printer helpers ───────────────────────────────────────────────────────────
+
+/// List all installed printers on Windows via PowerShell.
+#[tauri::command]
+pub async fn list_printers() -> Result<Vec<String>, String> {
+    use std::process::Command;
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-Printer | Select-Object -ExpandProperty Name",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let printers: Vec<String> = stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(printers)
+}
+
+/// Print an image file directly to the named printer (Windows only).
+/// Uses mspaint /pt which bypasses the print dialog.
+#[tauri::command]
+pub async fn print_file(path: String, printer: String) -> Result<(), String> {
+    use std::process::Command;
+    Command::new("mspaint")
+        .args(["/pt", &path, &printer])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}

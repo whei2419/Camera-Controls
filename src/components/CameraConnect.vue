@@ -1,71 +1,40 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { ref } from 'vue'
 
-const cameras = ref([])
-const scanning = ref(false)
+const DC = 'http://localhost:5513'
+
 const connecting = ref(false)
 const error = ref('')
 
 const emit = defineEmits(['connected'])
 
-async function scan() {
-  scanning.value = true
-  error.value = ''
-  try {
-    cameras.value = await invoke('list_cameras')
-    if (cameras.value.length === 0) {
-      error.value = 'No cameras found. Make sure the camera is on and connected via USB.'
-    }
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    scanning.value = false
-  }
-}
-
-async function connect(index) {
+async function connect() {
   connecting.value = true
   error.value = ''
   try {
-    const info = await invoke('connect_camera', { index })
-    emit('connected', info)
+    const res = await fetch(`${DC}/?CMD=Capture&_=${Date.now()}`, {
+      mode: 'no-cors',
+      signal: AbortSignal.timeout(4000)
+    })
+    // Any response (even an error page) means DigiCamControl's WebServer is up
+    emit('connected', { name: 'DigiCamControl', port: '5513' })
   } catch (e) {
-    error.value = String(e)
+    error.value = `Cannot reach DigiCamControl at ${DC}. Make sure it is running with the WebServer plugin enabled (port 5513).`
   } finally {
     connecting.value = false
   }
 }
-
-onMounted(scan)
 </script>
 
 <template>
   <div class="panel connect-panel">
     <div class="panel-header">
-      <h2>Camera Connection</h2>
-      <button class="btn-icon" :disabled="scanning" @click="scan" title="Scan for cameras">
-        <span :class="{ spin: scanning }">⟳</span>
-      </button>
+      <h2>Camera</h2>
     </div>
-
-    <div v-if="cameras.length === 0 && !scanning" class="empty-state">
-      <p>No cameras detected.</p>
-      <p class="hint">Connect your camera via USB, power it on, and make sure DigiCamControl is running with the WebServer plugin enabled.</p>
-    </div>
-
-    <ul v-else class="camera-list">
-      <li v-for="cam in cameras" :key="cam.index" class="camera-item">
-        <div class="camera-meta">
-          <span class="camera-name">{{ cam.name }}</span>
-          <span class="camera-port">{{ cam.port }}</span>
-        </div>
-        <button class="btn btn-primary" :disabled="connecting" @click="connect(cam.index)">
-          {{ connecting ? 'Connecting…' : 'Connect' }}
-        </button>
-      </li>
-    </ul>
-
+    <p class="hint">Make sure DigiCamControl is running with the WebServer plugin enabled on port 5513.</p>
+    <button class="btn btn-primary" style="width:100%;margin-top:0.75rem" :disabled="connecting" @click="connect">
+      {{ connecting ? 'Connecting…' : 'Connect to DigiCamControl' }}
+    </button>
     <p v-if="error" class="error-msg">{{ error }}</p>
   </div>
 </template>

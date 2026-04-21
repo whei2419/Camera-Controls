@@ -1,6 +1,15 @@
 <script setup>
 import { ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+
+const DC = 'http://localhost:5513'
+
+// Map our field names to DigiCamControl property names
+const PROP_MAP = {
+    iso: 'iso',
+    aperture: 'aperture',
+    shutter_speed: 'shutterspeed',
+    white_balance: 'whitebalance'
+}
 
 const props = defineProps({ connected: Boolean })
 
@@ -11,32 +20,53 @@ const successMsg = ref('')
 
 let refreshTimer = null
 
-async function loadOptions() {
-    try {
-        options.value = await invoke('get_setting_options')
-    } catch { }
+async function fetchSession() {
+    const res = await fetch(`${DC}/session.json?_=${Date.now()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
 }
 
-async function refreshSettings() {
+async function loadSettings() {
     if (!props.connected) return
     try {
-        settings.value = await invoke('get_settings')
+        const session = await fetchSession()
+        const cam = session.ConnectedCamera
+        if (!cam) return
+        const p = cam.Properties || {}
+        settings.value = {
+            iso: p.Iso?.Value ?? '',
+            aperture: p.Aperture?.Value ?? '',
+            shutter_speed: p.ShutterSpeed?.Value ?? '',
+            white_balance: p.WhiteBalance?.Value ?? '',
+            battery: p.Battery?.Value ?? ''
+        }
+        options.value = {
+            iso: p.Iso?.Values ?? [],
+            aperture: p.Aperture?.Values ?? [],
+            shutter_speed: p.ShutterSpeed?.Values ?? [],
+            white_balance: p.WhiteBalance?.Values ?? []
+        }
     } catch { }
 }
 
-async function setSetting(command, value) {
+async function setSetting(prop, value) {
     error.value = ''
     try {
-        await invoke(command, { value })
+        const dcProp = PROP_MAP[prop] ?? prop
+        const url = new URL(`${DC}/`)
+        url.searchParams.set('CMD', 'SetProperty')
+        url.searchParams.set('property', dcProp)
+        url.searchParams.set('value', value)
+        url.searchParams.set('_', Date.now())
+        await fetch(url.toString(), { mode: 'no-cors' })
         successMsg.value = 'Saved'
         setTimeout(() => { successMsg.value = '' }, 1200)
-        await refreshSettings()
+        await loadSettings()
     } catch (e) {
         error.value = String(e)
     }
 }
 
-// Parse a battery string like "75%" or "100%" into a number for the bar
 function batteryPct(str) {
     const n = parseInt(str)
     return isNaN(n) ? 0 : Math.min(100, Math.max(0, n))
@@ -50,9 +80,8 @@ function batteryClass(str) {
 
 watch(() => props.connected, async (val) => {
     if (val) {
-        await loadOptions()
-        await refreshSettings()
-        refreshTimer = setInterval(refreshSettings, 3000)
+        await loadSettings()
+        refreshTimer = setInterval(loadSettings, 3000)
     } else {
         settings.value = null
         clearInterval(refreshTimer)
@@ -82,7 +111,7 @@ watch(() => props.connected, async (val) => {
             <div class="setting-row">
                 <label>Aperture (Av)</label>
                 <div class="setting-control">
-                    <select :value="settings.aperture" @change="setSetting('set_aperture', $event.target.value)">
+                    <select :value="settings.aperture" @change="setSetting('aperture', $event.target.value)">
                         <option v-for="opt in options.aperture" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <span class="current-label">{{ settings.aperture }}</span>
@@ -94,7 +123,7 @@ watch(() => props.connected, async (val) => {
                 <label>Shutter (Tv)</label>
                 <div class="setting-control">
                     <select :value="settings.shutter_speed"
-                        @change="setSetting('set_shutter_speed', $event.target.value)">
+                        @change="setSetting('shutter_speed', $event.target.value)">
                         <option v-for="opt in options.shutter_speed" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <span class="current-label">{{ settings.shutter_speed }}</span>
@@ -105,7 +134,7 @@ watch(() => props.connected, async (val) => {
             <div class="setting-row">
                 <label>ISO</label>
                 <div class="setting-control">
-                    <select :value="settings.iso" @change="setSetting('set_iso', $event.target.value)">
+                    <select :value="settings.iso" @change="setSetting('iso', $event.target.value)">
                         <option v-for="opt in options.iso" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <span class="current-label">{{ settings.iso }}</span>
@@ -117,7 +146,7 @@ watch(() => props.connected, async (val) => {
                 <label>White Balance</label>
                 <div class="setting-control">
                     <select :value="settings.white_balance"
-                        @change="setSetting('set_white_balance', $event.target.value)">
+                        @change="setSetting('white_balance', $event.target.value)">
                         <option v-for="opt in options.white_balance" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <span class="current-label">{{ settings.white_balance }}</span>

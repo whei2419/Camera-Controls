@@ -23,6 +23,9 @@ pub fn run() {
             commands::start_live_view,
             commands::stop_live_view,
             commands::get_live_view_frame,
+            commands::list_folder_files,
+            commands::list_printers,
+            commands::print_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

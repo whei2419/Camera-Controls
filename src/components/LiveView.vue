@@ -1,106 +1,233 @@
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 
-const props = defineProps({ connected: Boolean })
+const DC = 'http://localhost:5513'
+
+const props = defineProps({ obsConnected: Boolean, connected: Boolean, obsInstance: Object })
+const emit = defineEmits(['capture-success', 'record-saved'])
 
 const active = ref(false)
-const frameData = ref('') // base64 JPEG
-const fps = ref(0)
 const error = ref('')
+const videoRef = ref(null)
+const videoDevices = ref([])
+const selectedDevice = ref('')
+let stream = null
 
-let rafId = null
-let frameCount = 0
-let fpsTimer = null
+// Enumerate without opening any stream — avoids "Device in use" from a temp stream.
+// Labels may be empty on first run (no prior permission); they populate after startFeed
+// acquires the real stream and we re-enumerate.
+async function loadDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    applyDeviceList(devices)
+  } catch { /* no permission yet — list stays empty until startFeed */ }
+}
 
-async function toggle() {
-  if (active.value) {
-    await stopLV()
-  } else {
-    await startLV()
+function applyDeviceList(devices) {
+  videoDevices.value = devices.filter(d => d.kind === 'videoinput')
+  const obs = videoDevices.value.find(d =>
+    d.label.toLowerCase().includes('obs') ||
+    d.label.toLowerCase().includes('virtual')
+  )
+  // Keep current selection if still valid, otherwise pick OBS / first device
+  const ids = videoDevices.value.map(d => d.deviceId)
+  if (!selectedDevice.value || !ids.includes(selectedDevice.value)) {
+    selectedDevice.value = obs
+      ? obs.deviceId
+      : (videoDevices.value[0]?.deviceId ?? '')
   }
 }
 
-async function startLV() {
+async function startFeed() {
   error.value = ''
   try {
-    await invoke('start_live_view')
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: selectedDevice.value
+        ? { deviceId: { exact: selectedDevice.value } }
+        : true,
+      audio: false
+    })
+    if (videoRef.value) {
+      videoRef.value.srcObject = stream
+      await videoRef.value.play()
+    }
     active.value = true
-    frameCount = 0
-    fpsTimer = setInterval(() => {
-      fps.value = frameCount
-      frameCount = 0
-    }, 1000)
-    scheduleFrame()
+
+    // Re-enumerate now that we have permission — labels will be populated
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    applyDeviceList(devices)
   } catch (e) {
     error.value = String(e)
   }
 }
 
-async function stopLV() {
-  active.value = false
-  if (rafId) cancelAnimationFrame(rafId)
-  clearInterval(fpsTimer)
-  fps.value = 0
-  try { await invoke('stop_live_view') } catch {}
-  frameData.value = ''
-}
-
-function scheduleFrame() {
-  if (!active.value) return
-  rafId = requestAnimationFrame(fetchFrame)
-}
-
-async function fetchFrame() {
-  if (!active.value) return
-  try {
-    const b64 = await invoke('get_live_view_frame')
-    frameData.value = b64
-    frameCount++
-  } catch (e) {
-    // camera might report OBJECT_NOTREADY during rapid polling; retry
-    if (!String(e).includes('0x00000881')) {
-      error.value = String(e)
-    }
+function stopFeed() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop())
+    stream = null
   }
-  scheduleFrame()
+  if (videoRef.value) {
+    videoRef.value.srcObject = null
+  }
+  active.value = false
 }
 
-watch(() => props.connected, (val) => {
-  if (!val && active.value) stopLV()
+async function toggle() {
+  if (active.value) stopFeed()
+  else await startFeed()
+}
+
+// ── Capture (Canon camera — full quality) ────────────────────────────────────
+const capturing = ref(false)
+const captureMsg = ref('')
+
+async function captureFrame() {
+  if (!props.connected || capturing.value) return
+  capturing.value = true
+  captureMsg.value = ''
+  try {
+    await fetch(`${DC}/?CMD=Capture&_=${Date.now()}`, { mode: 'no-cors' })
+    captureMsg.value = 'Saved!'
+    setTimeout(() => { captureMsg.value = '' }, 1500)
+    emit('capture-success')
+  } catch (e) {
+    captureMsg.value = 'Failed'
+    setTimeout(() => { captureMsg.value = '' }, 2000)
+  } finally {
+    capturing.value = false
+  }
+}
+
+// ── Record (OBS — full quality) ───────────────────────────────────────────────
+const recording = ref(false)
+const recordingTime = ref(0)
+let recordTimer = null
+
+function onRecordStateChanged({ outputActive, outputPath }) {
+  recording.value = outputActive
+  if (outputActive) {
+    recordingTime.value = 0
+    recordTimer = setInterval(() => { recordingTime.value++ }, 1000)
+  } else {
+    clearInterval(recordTimer)
+    if (outputPath) emit('record-saved', outputPath)
+  }
+}
+
+// Attach / detach the RecordStateChanged listener as the OBS instance changes
+watch(() => props.obsInstance, (obs, oldObs) => {
+  if (oldObs) oldObs.off('RecordStateChanged', onRecordStateChanged)
+  if (obs) obs.on('RecordStateChanged', onRecordStateChanged)
 })
 
+async function startRecording() {
+  if (!props.obsInstance) return
+  error.value = ''
+  try { await props.obsInstance.call('StartRecord') } catch (e) { error.value = String(e) }
+}
+
+async function stopRecording() {
+  if (!props.obsInstance) return
+  try { await props.obsInstance.call('StopRecord') } catch (e) { error.value = String(e) }
+}
+
+function formatTime(s) {
+  const m = Math.floor(s / 60).toString().padStart(2, '0')
+  const sec = (s % 60).toString().padStart(2, '0')
+  return `${m}:${sec}`
+}
+
+// Auto-start feed when OBS connects; stop when it disconnects
+watch(() => props.obsConnected, async (val) => {
+  if (val && !active.value) await startFeed()
+  else if (!val && active.value) stopFeed()
+})
+
+onMounted(loadDevices)
 onUnmounted(() => {
-  if (active.value) stopLV()
+  if (active.value) stopFeed()
+  clearInterval(recordTimer)
+  if (props.obsInstance) props.obsInstance.off('RecordStateChanged', onRecordStateChanged)
 })
 </script>
 
 <template>
-  <div class="panel lv-panel">
-    <div class="panel-header">
-      <h2>Live View</h2>
-      <span v-if="active" class="fps-badge">{{ fps }} fps</span>
+  <div class="lv-panel">
+
+    <!-- ── Toolbar ── -->
+    <div class="lv-toolbar">
+
+      <select
+        v-if="videoDevices.length > 0"
+        v-model="selectedDevice"
+        class="device-select"
+        :disabled="active"
+        title="Select video source"
+      >
+        <option v-for="d in videoDevices" :key="d.deviceId" :value="d.deviceId">
+          {{ d.label || 'Camera ' + (videoDevices.indexOf(d) + 1) }}
+        </option>
+      </select>
+      <span v-else class="no-device">No devices</span>
+
+      <div class="toolbar-sep"></div>
+
+      <!-- Shoot -->
       <button
-        class="btn btn-sm"
-        :class="active ? 'btn-danger' : 'btn-primary'"
-        :disabled="!connected"
+        class="tbtn tbtn-shoot"
+        :class="{ ok: captureMsg === 'Saved!', err: captureMsg === 'Failed' }"
+        :disabled="!connected || capturing"
+        title="Capture photo (Canon)"
+        @click="captureFrame"
+      >
+        <span class="tbtn-icon">📷</span>
+        <span class="tbtn-label">{{ capturing ? '…' : captureMsg || 'Shoot' }}</span>
+      </button>
+
+      <!-- Record -->
+      <button
+        class="tbtn tbtn-rec"
+        :class="{ active: recording }"
+        :disabled="!obsInstance"
+        :title="obsInstance ? (recording ? 'Stop OBS recording' : 'Record via OBS') : 'Connect OBS to record'"
+        @click="recording ? stopRecording() : startRecording()"
+      >
+        <span class="rec-dot"></span>
+        <span class="tbtn-label">{{ recording ? formatTime(recordingTime) : 'Record' }}</span>
+      </button>
+
+      <div class="toolbar-sep"></div>
+
+      <!-- Feed toggle -->
+      <button
+        class="tbtn tbtn-feed"
+        :class="active ? 'feed-on' : 'feed-off'"
+        :disabled="!obsConnected && !active"
+        :title="active ? 'Disconnect OBS feed' : 'Connect OBS feed'"
         @click="toggle"
       >
-        {{ active ? 'Stop' : 'Start' }}
+        <span class="feed-dot" :class="{ live: active }"></span>
+        <span class="tbtn-label">{{ active ? 'Live' : 'Offline' }}</span>
       </button>
+
     </div>
 
-    <div class="lv-viewport" :class="{ active }">
-      <img
-        v-if="active && frameData"
-        :src="`data:image/jpeg;base64,${frameData}`"
-        alt="Live view"
-        class="lv-img"
-      />
-      <div v-else class="lv-placeholder">
-        <span v-if="!connected">No camera</span>
-        <span v-else-if="!active">Live view off</span>
-        <span v-else>Waiting for frame…</span>
+    <!-- Viewport -->
+    <div class="lv-viewport-wrap">
+      <div class="lv-viewport" :class="{ active }">
+        <video
+          ref="videoRef"
+          v-show="active"
+          class="lv-video"
+          autoplay
+          playsinline
+          muted
+        />
+        <div v-if="!active" class="lv-placeholder">
+          <span v-if="!obsConnected">Connect OBS first</span>
+          <span v-else-if="videoDevices.length === 0">No video devices found</span>
+          <span v-else>Connecting to feed…</span>
+        </div>
       </div>
     </div>
 
@@ -109,51 +236,183 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.lv-panel { display: flex; flex-direction: column; }
-.panel-header {
+.lv-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+.lv-toolbar {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-surface);
+  flex-shrink: 0;
 }
-.panel-header h2 {
-  margin: 0;
-  flex: 1;
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--c-text-muted);
+
+.toolbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--c-border);
+  margin: 0 2px;
+  flex-shrink: 0;
 }
-.fps-badge {
+
+.device-select {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  color: var(--c-text);
+  font-size: 0.75rem;
+  padding: 0.28rem 0.5rem;
+  outline: none;
+  max-width: 160px;
+  cursor: pointer;
+  height: 30px;
+}
+.device-select:disabled { opacity: 0.45; cursor: not-allowed; }
+.device-select:focus { border-color: var(--c-accent); }
+
+.no-device {
   font-size: 0.72rem;
-  font-weight: 700;
+  color: var(--c-text-muted);
+  font-style: italic;
+}
+
+/* ── Toolbar buttons ─────────────────────────────────────────────────────── */
+.tbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.13s, border-color 0.13s, opacity 0.13s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tbtn:disabled { opacity: 0.35; cursor: not-allowed; }
+.tbtn:not(:disabled):active { opacity: 0.75; }
+
+.tbtn-icon { font-size: 0.9rem; line-height: 1; }
+.tbtn-label { font-size: 0.76rem; }
+
+/* Shoot */
+.tbtn-shoot {
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  border-color: var(--c-border);
+}
+.tbtn-shoot:not(:disabled):hover { background: var(--c-border); }
+.tbtn-shoot.ok  { color: #4ade80; border-color: #4ade8055; background: rgba(74,222,128,0.08); }
+.tbtn-shoot.err { color: var(--c-error); border-color: var(--c-error); }
+
+/* Record */
+.tbtn-rec {
+  background: rgba(127,29,29,0.35);
+  color: #fca5a5;
+  border-color: #7f1d1d;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tbtn-rec:not(:disabled):hover { background: rgba(153,27,27,0.5); }
+.tbtn-rec.active {
+  background: rgba(220,38,38,0.55);
+  color: #fff;
+  border-color: #ef4444;
+  animation: rec-pulse 1.4s infinite;
+}
+
+.rec-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Feed toggle */
+.tbtn-feed {
+  background: var(--c-surface-2);
+  color: var(--c-text-muted);
+  border-color: var(--c-border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tbtn-feed.feed-on {
+  background: rgba(59,130,246,0.12);
   color: var(--c-accent);
-  font-family: monospace;
-  background: #0e2d1e;
-  padding: 2px 8px;
-  border-radius: 999px;
+  border-color: var(--c-accent);
+}
+.tbtn-feed.feed-off:not(:disabled):hover { background: var(--c-surface-2); color: var(--c-text); }
+
+.feed-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-text-muted);
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.feed-dot.live {
+  background: #4ade80;
+  box-shadow: 0 0 5px #4ade80aa;
+  animation: live-blink 2s infinite;
+}
+
+@keyframes live-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Viewport ────────────────────────────────────────────────────────────── */
+.lv-viewport-wrap {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a0a;
+  padding: 0.75rem;
 }
 
 .lv-viewport {
-  flex: 1;
+  aspect-ratio: 9 / 16;
+  height: 100%;
+  max-height: 100%;
   border: 2px solid var(--c-border);
   border-radius: 10px;
   overflow: hidden;
   background: #0a0a0a;
-  min-height: 200px;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
   transition: border-color 0.25s;
 }
+
 .lv-viewport.active { border-color: var(--c-accent); }
 
-.lv-img {
+.lv-video {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
   display: block;
 }
 
@@ -163,6 +422,5 @@ onUnmounted(() => {
   user-select: none;
 }
 
-.btn-sm { font-size: 0.78rem; padding: 0.3rem 0.75rem; }
-.error-msg { margin-top: 0.5rem; color: var(--c-error); font-size: 0.82rem; }
+.error-msg { margin: 0.4rem 1rem; color: var(--c-error); font-size: 0.8rem; }
 </style>
