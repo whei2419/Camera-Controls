@@ -1,9 +1,12 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import GalleryScreen from './components/GalleryScreen.vue'
 import LiveView from './components/LiveView.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ThumbnailGallery from './components/ThumbnailGallery.vue'
+import OBSConnect from './components/OBSConnect.vue'
+import CameraConnect from './components/CameraConnect.vue'
+import { initPusher, disconnectPusher } from './lib/pusherClient'
 
 // ── DigiCamControl (camera settings) ──
 const connected = ref(false)
@@ -82,6 +85,9 @@ const autoPrint = ref(localStorage.getItem('setting_auto_print') === 'true')
 const imageFolder = ref(localStorage.getItem('setting_image_path') || '')
 const videoFolder = ref(localStorage.getItem('setting_video_path') || '')
 
+// Ref for calling LiveView methods
+const liveViewRef = ref(null)
+
 // Keep folder refs in sync when the gallery screen opens
 function openGalleryScreen() {
   imageFolder.value = localStorage.getItem('setting_image_path') || ''
@@ -121,6 +127,38 @@ function onRecordSaved(path) {
 }
 
 onMounted(loadGallery)
+// Initialize Pusher client (listen for remote triggers)
+onMounted(() => {
+  try {
+    // Provided credentials (do NOT use secret on client-side serverside only)
+    initPusher({
+      key: 'a1e22a2a180cb0de8d72',
+      cluster: 'ap1',
+      channelName: 'camera-control',
+      onCapture: async (data) => {
+        // When remote trigger received, call LiveView.captureFrame if available
+        if (liveViewRef.value?.captureFrame) {
+          liveViewRef.value.captureFrame()
+        } else {
+          // Fallback: call DigiCamControl capture directly
+          try { await fetch('http://localhost:5513/?CMD=Capture&_=' + Date.now(), { mode: 'no-cors' }) } catch { }
+        }
+      },
+      onRecordStart: async () => {
+        if (liveViewRef.value?.startRecording) liveViewRef.value.startRecording()
+      },
+      onRecordStop: async () => {
+        if (liveViewRef.value?.stopRecording) liveViewRef.value.stopRecording()
+      },
+      onFeedToggle: async (payload) => {
+        // payload { action: 'on'|'off' } optional
+        if (liveViewRef.value?.toggle) liveViewRef.value.toggle()
+      }
+    })
+  } catch (e) { console.warn('Pusher init failed', e) }
+})
+
+onUnmounted(() => { disconnectPusher() })
 </script>
 
 <template>
@@ -152,21 +190,22 @@ onMounted(loadGallery)
     <div class="app-body">
 
       <!-- Left: Thumbnail gallery -->
-      <ThumbnailGallery
-        :image-folder="imageFolder"
-        :refresh-trigger="thumbnailRefreshTrigger"
-        @open-gallery="openGalleryScreen"
-      />
+      <ThumbnailGallery :image-folder="imageFolder" :refresh-trigger="thumbnailRefreshTrigger"
+        @open-gallery="openGalleryScreen" />
+
+      <!-- Keep OBS connect mounted (hidden) so app stays connected to OBS even when settings modal is closed -->
+      <div style="display:none">
+        <OBSConnect @connected="onOBSConnected" @disconnected="onOBSDisconnected" />
+      </div>
+      <!-- Keep Camera connect mounted (hidden) so app can ping & detect DigiCamControl on startup -->
+      <div style="display:none">
+        <CameraConnect @connected="onConnected" />
+      </div>
 
       <!-- Main area: live view only -->
       <section class="main-area">
-        <LiveView
-          :obs-connected="obsConnected"
-          :connected="connected"
-          :obs-instance="obsInfo?.obs ?? null"
-          @capture-success="onCaptureSuccess"
-          @record-saved="onRecordSaved"
-        />
+        <LiveView ref="liveViewRef" :obs-connected="obsConnected" :connected="connected"
+          :obs-instance="obsInfo?.obs ?? null" @capture-success="onCaptureSuccess" @record-saved="onRecordSaved" />
       </section>
 
     </div>
@@ -182,44 +221,14 @@ onMounted(loadGallery)
   </div>
 
   <!-- ── Settings Modal ───────────────────────────────────────── -->
-  <SettingsModal
-    :show="showSettingsModal"
-    :obs-connected="obsConnected"
-    :obs-info="obsInfo"
-    :connected="connected"
-    :gallery-items="gallery"
-    :obs-instance="obsInfo?.obs ?? null"
-    @close="showSettingsModal = false"
-    @obs-connected="onOBSConnected"
-    @obs-disconnected="onOBSDisconnected"
-    @camera-connected="onConnected"
-    @clear-gallery="clearGallery"
-  />
-
-  <!-- ── Settings Modal ───────────────────────────────────────── -->
-  <SettingsModal
-    :show="showSettingsModal"
-    :obs-connected="obsConnected"
-    :obs-info="obsInfo"
-    :connected="connected"
-    :gallery-items="gallery"
-    :obs-instance="obsInfo?.obs ?? null"
-    @close="showSettingsModal = false"
-    @obs-connected="onOBSConnected"
-    @obs-disconnected="onOBSDisconnected"
-    @camera-connected="onConnected"
-    @clear-gallery="clearGallery"
-  />
+  <SettingsModal :show="showSettingsModal" :obs-connected="obsConnected" :obs-info="obsInfo" :connected="connected"
+    :gallery-items="gallery" :obs-instance="obsInfo?.obs ?? null" @close="showSettingsModal = false"
+    @obs-connected="onOBSConnected" @obs-disconnected="onOBSDisconnected" @camera-connected="onConnected"
+    @clear-gallery="clearGallery" />
 
   <!-- ── Gallery Screen ───────────────────────────────────────── -->
-  <GalleryScreen
-    ref="galleryScreenRef"
-    :show="showGalleryScreen"
-    :image-folder="imageFolder"
-    :video-folder="videoFolder"
-    @close="showGalleryScreen = false"
-    @update:auto-print="v => { autoPrint = v }"
-  />
+  <GalleryScreen ref="galleryScreenRef" :show="showGalleryScreen" :image-folder="imageFolder"
+    :video-folder="videoFolder" @close="showGalleryScreen = false" @update:auto-print="v => { autoPrint = v }" />
 </template>
 
 <style>
@@ -440,12 +449,23 @@ body {
   font-size: 0.85rem;
   font-weight: 600;
   color: #4ade80;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
   min-width: 200px;
   backdrop-filter: blur(8px);
 }
 
-.toast-enter-active, .toast-leave-active { transition: opacity 0.3s, transform 0.3s; }
-.toast-enter-from { opacity: 0; transform: translateY(12px); }
-.toast-leave-to   { opacity: 0; transform: translateY(12px); }
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.3s, transform 0.3s;
+}
+
+.toast-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(12px);
+}
 </style>

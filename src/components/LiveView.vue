@@ -57,6 +57,7 @@ async function startFeed() {
     const devices = await navigator.mediaDevices.enumerateDevices()
     applyDeviceList(devices)
   } catch (e) {
+    console.error('startFeed error', e)
     error.value = String(e)
   }
 }
@@ -143,11 +144,34 @@ watch(() => props.obsConnected, async (val) => {
   else if (!val && active.value) stopFeed()
 })
 
+// Debug helper — logs devices and attempts a quick getUserMedia test
+async function debugDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    console.log('Video devices', devices.filter(d => d.kind === 'videoinput'))
+    // Try to open a temporary stream to detect permission / hardware errors
+    const testStream = await navigator.mediaDevices.getUserMedia({ video: true })
+    console.log('getUserMedia test succeeded')
+    testStream.getTracks().forEach(t => t.stop())
+  } catch (err) {
+    console.error('getUserMedia test failed', err)
+    error.value = String(err)
+  }
+}
+
 onMounted(loadDevices)
 onUnmounted(() => {
   if (active.value) stopFeed()
   clearInterval(recordTimer)
   if (props.obsInstance) props.obsInstance.off('RecordStateChanged', onRecordStateChanged)
+})
+
+// Expose control methods to parent (used by Pusher triggers)
+defineExpose({
+  captureFrame,
+  startRecording,
+  stopRecording,
+  toggle
 })
 </script>
 
@@ -171,6 +195,13 @@ onUnmounted(() => {
       <span v-else class="no-device">No devices</span>
 
       <div class="toolbar-sep"></div>
+
+      <div class="toolbar-sep"></div>
+
+      <!-- Debug: list devices & test permission -->
+      <button class="tbtn" title="Debug devices" @click="debugDevices" style="opacity:0.8">
+        🔍
+      </button>
 
       <!-- Shoot -->
       <button
@@ -202,8 +233,8 @@ onUnmounted(() => {
       <button
         class="tbtn tbtn-feed"
         :class="active ? 'feed-on' : 'feed-off'"
-        :disabled="!obsConnected && !active"
-        :title="active ? 'Disconnect OBS feed' : 'Connect OBS feed'"
+        :disabled="videoDevices.length === 0"
+        :title="active ? 'Disconnect feed' : (videoDevices.length ? 'Connect feed' : 'No video device')"
         @click="toggle"
       >
         <span class="feed-dot" :class="{ live: active }"></span>
@@ -224,9 +255,8 @@ onUnmounted(() => {
           muted
         />
         <div v-if="!active" class="lv-placeholder">
-          <span v-if="!obsConnected">Connect OBS first</span>
-          <span v-else-if="videoDevices.length === 0">No video devices found</span>
-          <span v-else>Connecting to feed…</span>
+          <span v-if="videoDevices.length === 0">No video devices found</span>
+          <span v-else>Connect a device using the selector and press Live</span>
         </div>
       </div>
     </div>

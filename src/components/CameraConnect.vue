@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 
 const DC = 'http://localhost:5513'
 
@@ -24,6 +24,11 @@ async function connect() {
     connecting.value = false
   }
 }
+
+// Auto-connect on mount (try to ping the local DigiCamControl server)
+onMounted(() => {
+  connect().catch(() => { })
+})
 </script>
 
 <template>
@@ -44,12 +49,14 @@ async function connect() {
   max-width: 480px;
   margin: 0 auto;
 }
+
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 1rem;
 }
+
 .panel-header h2 {
   margin: 0;
   font-size: 1rem;
@@ -58,6 +65,7 @@ async function connect() {
   text-transform: uppercase;
   color: var(--c-text-muted);
 }
+
 .btn-icon {
   background: none;
   border: 1px solid var(--c-border);
@@ -72,16 +80,50 @@ async function connect() {
   justify-content: center;
   transition: background 0.15s;
 }
-.btn-icon:hover { background: var(--c-surface-2); }
-.btn-icon:disabled { opacity: 0.4; cursor: not-allowed; }
-.spin { display: inline-block; animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-.empty-state { text-align: center; padding: 2rem 1rem; color: var(--c-text-muted); }
-.empty-state p { margin: 0.3rem 0; }
-.hint { font-size: 0.8rem; }
+.btn-icon:hover {
+  background: var(--c-surface-2);
+}
 
-.camera-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.btn-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.spin {
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--c-text-muted);
+}
+
+.empty-state p {
+  margin: 0.3rem 0;
+}
+
+.hint {
+  font-size: 0.8rem;
+}
+
+.camera-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .camera-item {
   display: flex;
   align-items: center;
@@ -91,8 +133,27 @@ async function connect() {
   border-radius: 8px;
   padding: 0.75rem 1rem;
 }
-.camera-meta { display: flex; flex-direction: column; gap: 0.15rem; }
-.camera-name { font-weight: 600; font-size: 0.95rem; }
-.camera-port { font-size: 0.75rem; color: var(--c-text-muted); font-family: monospace; }
-.error-msg { margin-top: 0.75rem; color: var(--c-error); font-size: 0.85rem; }
+
+.camera-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.camera-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.camera-port {
+  font-size: 0.75rem;
+  color: var(--c-text-muted);
+  font-family: monospace;
+}
+
+.error-msg {
+  margin-top: 0.75rem;
+  color: var(--c-error);
+  font-size: 0.85rem;
+}
 </style>
