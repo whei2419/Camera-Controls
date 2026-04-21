@@ -7,6 +7,7 @@ import ThumbnailGallery from './components/ThumbnailGallery.vue'
 import OBSConnect from './components/OBSConnect.vue'
 import CameraConnect from './components/CameraConnect.vue'
 import { initPusher, disconnectPusher } from './lib/pusherClient'
+import { remoteSite, uploadCaptureFormField } from './config/remoteSite.js'
 
 // ── DigiCamControl (camera settings) ──
 const connected = ref(false)
@@ -99,53 +100,63 @@ function openGalleryScreen() {
   showGalleryScreen.value = true
 }
 
-function onCaptureSuccess() {
+async function onCaptureSuccess(snapshotSet = new Set()) {
   const folder = localStorage.getItem('setting_image_path') || ''
   addToast('📷 Photo captured!')
-  // Optimistically add a placeholder entry (folder known)
+
+  if (!folder) return
+
+  const { invoke, convertFileSrc } = await import('@tauri-apps/api/core')
+  const EXTS = ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
+
+  console.log('[capture] snapshot has', snapshotSet.size, 'files (pre-capture)')
+
+  // Add a placeholder gallery entry while we wait
   pushGalleryItem({ type: 'photo', folder, path: '', ts: Date.now() })
-  // Refresh thumbnails
   refreshThumbnails()
-  // Try to resolve latest saved file from the image folder and update gallery
-  if (folder) {
-    setTimeout(async () => {
+
+  // Poll every 500 ms (up to 20 s) until a new file appears
+  const MAX_ATTEMPTS = 40
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    try {
+      const files = await invoke('list_folder_files', { folder, extensions: EXTS })
+      const newest = files.find(f => !snapshotSet.has(f)) ?? null
+      console.log('[capture] poll', i, 'newest new file:', newest)
+      if (!newest) continue
+
+      // New file detected — replace the placeholder in the gallery
+      const idx = gallery.value.findIndex(g => g.type === 'photo' && g.folder === folder && !g.path)
+      const item = { type: 'photo', folder, path: newest, ts: Date.now() }
+      if (idx >= 0) gallery.value.splice(idx, 1, item)
+      else gallery.value.unshift(item)
+      localStorage.setItem(GALLERY_KEY, JSON.stringify(gallery.value))
+      refreshThumbnails()
+
+      // Upload
+      console.log('[capture] uploading', newest, '->', remoteSite.uploadCapture)
       try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const files = await invoke('list_folder_files', {
-          folder,
-          extensions: ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
+        await invoke('upload_capture_file', {
+          file_path: newest,
+          url: remoteSite.uploadCapture,
+          field_name: uploadCaptureFormField,
         })
-        if (files && files.length > 0) {
-          const newest = files[0]
-          // Replace the placeholder (first matching folder without path) if present
-          const idx = gallery.value.findIndex(g => g.type === 'photo' && (g.folder === folder) && !g.path)
-          const item = { type: 'photo', folder, path: newest, ts: Date.now() }
-          if (idx === 0) gallery.value[0] = item
-          else if (idx > 0) gallery.value.splice(idx, 1, item)
-          else gallery.value.unshift(item)
-          localStorage.setItem(GALLERY_KEY, JSON.stringify(gallery.value))
-          // refresh thumbnails after resolving file
-          refreshThumbnails()
-        }
-      } catch (e) { console.warn('resolveLatestFile failed', e) }
-    }, 1500)
-  }
-  // Auto-print: ask the gallery screen to print the latest image
-  if (autoPrint.value && folder && galleryScreenRef.value) {
-    // Give DigiCamControl a moment to save the file, then refresh + print newest
-    setTimeout(async () => {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const { convertFileSrc } = await import('@tauri-apps/api/core')
-        const files = await invoke('list_folder_files', {
-          folder,
-          extensions: ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
-        })
-        if (files.length > 0) {
-          galleryScreenRef.value.printImage(convertFileSrc(files[0]), files[0])
-        }
-      } catch { }
-    }, 2500)
+        console.log('[capture] upload ok')
+        addToast('☁️ Uploaded to server')
+      } catch (uploadErr) {
+        console.error('[capture] upload_capture_file failed:', uploadErr)
+        addToast('Upload to server failed', 'error')
+      }
+
+      // Auto-print
+      if (autoPrint.value && galleryScreenRef.value) {
+        galleryScreenRef.value.printImage(convertFileSrc(newest), newest)
+      }
+
+      break
+    } catch (loopErr) {
+      console.error('[capture] poll loop error:', loopErr)
+    }
   }
 }
 
@@ -304,6 +315,34 @@ onUnmounted(() => { disconnectPusher() })
 
 body {
   margin: 0;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--c-border);
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-text-muted);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-border) transparent;
 }
 
 /* ── Layout ──────────────────────────────────────────────────────────────────── */

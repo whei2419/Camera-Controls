@@ -147,6 +147,74 @@ pub async fn list_folder_files(
     Ok(entries.into_iter().map(|(_, p)| p).collect())
 }
 
+/// POST the capture file to the Laravel `upload-capture` route as multipart form-data.
+/// `field_name` must match the key used in `$request->file(...)` on the server (often `image`).
+#[tauri::command]
+pub async fn upload_capture_file(
+    file_path: String,
+    url: String,
+    field_name: String,
+) -> Result<(), String> {
+    use reqwest::multipart;
+    use std::path::Path;
+    use std::time::Duration;
+
+    let path = Path::new(&file_path);
+    let bytes = std::fs::read(path).map_err(|e| format!("read file: {e}"))?;
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("capture.jpg")
+        .to_string();
+
+    let mime = mime_for_capture_path(path);
+
+    let part = multipart::Part::bytes(bytes)
+        .file_name(filename)
+        .mime_str(mime)
+        .map_err(|e| e.to_string())?;
+
+    let form = multipart::Form::new().part(field_name, part);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let res = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(400).collect();
+        return Err(format!("HTTP {status}: {snippet}"));
+    }
+    Ok(())
+}
+
+fn mime_for_capture_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("tif") | Some("tiff") => "image/tiff",
+        Some("cr2") | Some("cr3") => "application/octet-stream",
+        Some("nef") | Some("arw") => "application/octet-stream",
+        _ => "application/octet-stream",
+    }
+}
+
 // ── Printer helpers ───────────────────────────────────────────────────────────
 
 /// List all installed printers on Windows via PowerShell.

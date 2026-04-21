@@ -103,9 +103,13 @@ onMounted(refresh)
                             <path d="M1 5H15V19H1V5Z" stroke="currentColor" stroke-width="1" />
                         </svg><span>Videos</span></div>
                     <div class="row-grid">
-                        <div v-for="v in videos" :key="v.path" class="tg-thumb small"
+                        <div v-for="v in videos" :key="v.path" class="tg-thumb tg-thumb-video small"
                             :title="v.path.split(/[\\/]/).pop()" @click="$emit('open-gallery')">
-                            <img :src="v.src" loading="lazy" />
+                            <svg class="video-play-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <rect width="24" height="24" rx="4" fill="currentColor" opacity="0.12"/>
+                                <polygon points="9,7 19,12 9,17" fill="currentColor"/>
+                            </svg>
+                            <span class="video-name">{{ v.path.split(/[\\/]/).pop() }}</span>
                         </div>
                     </div>
                 </div>
@@ -295,6 +299,34 @@ onMounted(refresh)
     height: 100%;
     object-fit: cover;
     display: block;
+}
+
+.tg-thumb-video {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px;
+    color: var(--c-text-muted);
+}
+
+.video-play-icon {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+}
+
+.video-name {
+    font-size: 0.6rem;
+    line-height: 1.2;
+    text-align: center;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-all;
+    color: var(--c-text-muted);
 }
 
 /* Footer */

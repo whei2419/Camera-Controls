@@ -87,10 +87,24 @@ async function captureFrame() {
   capturing.value = true
   captureMsg.value = ''
   try {
+    // Snapshot existing files BEFORE the capture so App.vue can detect the new one
+    let snapshotSet = new Set()
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const folder = localStorage.getItem('setting_image_path') || ''
+      if (folder) {
+        const before = await invoke('list_folder_files', {
+          folder,
+          extensions: ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
+        })
+        snapshotSet = new Set(before)
+      }
+    } catch { }
+
     await fetch(`${DC}/?CMD=Capture&_=${Date.now()}`, { mode: 'no-cors' })
     captureMsg.value = 'Saved!'
     setTimeout(() => { captureMsg.value = '' }, 1500)
-    emit('capture-success')
+    emit('capture-success', snapshotSet)
   } catch (e) {
     captureMsg.value = 'Failed'
     setTimeout(() => { captureMsg.value = '' }, 2000)

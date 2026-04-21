@@ -24,6 +24,7 @@ pub fn run() {
             commands::stop_live_view,
             commands::get_live_view_frame,
             commands::list_folder_files,
+            commands::upload_capture_file,
             commands::list_printers,
             commands::print_file,
         ])
