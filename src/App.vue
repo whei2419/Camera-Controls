@@ -89,6 +89,9 @@ const videoFolder = ref(localStorage.getItem('setting_video_path') || '')
 // Ref for calling LiveView methods
 const liveViewRef = ref(null)
 
+// Pusher connection state
+const pusherConnected = ref(false)
+
 // Keep folder refs in sync when the gallery screen opens
 function openGalleryScreen() {
   imageFolder.value = localStorage.getItem('setting_image_path') || ''
@@ -161,6 +164,8 @@ onMounted(() => {
       key: 'a1e22a2a180cb0de8d72',
       cluster: 'ap1',
       channelName: 'camera-control',
+      onConnected: () => { pusherConnected.value = true },
+      onDisconnected: () => { pusherConnected.value = false },
       onCapture: async (data) => {
         // When remote trigger received, call LiveView.captureFrame if available
         if (liveViewRef.value?.captureFrame) {
@@ -202,6 +207,10 @@ onUnmounted(() => { disconnectPusher() })
           <span class="dot dot-obs"></span>
           OBS · {{ obsInfo.scene }}
         </div>
+        <div v-if="pusherConnected" class="connection-badge">
+          <span class="dot dot-push"></span>
+          PUSH
+        </div>
         <div v-if="connected && cameraInfo" class="connection-badge">
           <span class="dot dot-live"></span>
           {{ cameraInfo.name }}
@@ -236,6 +245,7 @@ onUnmounted(() => { disconnectPusher() })
 
     </div>
   </main>
+
 
   <!-- ── Toast notifications ─────────────────────────────────────────── -->
   <div class="toast-wrap">
@@ -353,6 +363,12 @@ body {
   box-shadow: 0 0 6px #a78bfa88;
 }
 
+.dot-push {
+  background: #60a5fa;
+  box-shadow: 0 0 6px #60a5fa88;
+  animation: blink 2s infinite;
+}
+
 @keyframes blink {
 
   0%,
@@ -466,6 +482,8 @@ body {
   gap: 8px;
   pointer-events: none;
 }
+
+
 
 .toast {
   background: var(--c-surface-2);
