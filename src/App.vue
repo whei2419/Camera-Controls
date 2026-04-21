@@ -217,7 +217,15 @@ onUnmounted(() => { disconnectPusher() })
           <button class="btn btn-ghost btn-xs" @click="disconnect">Disconnect</button>
         </div>
         <button class="btn btn-ghost btn-xs settings-btn" @click="showSettingsModal = true">⚙ Settings</button>
-        <button class="btn btn-ghost btn-xs gallery-btn" @click="openGalleryScreen">🖼 Gallery</button>
+        <button class="btn btn-ghost btn-xs gallery-btn" @click="openGalleryScreen">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
+            style="vertical-align:middle;margin-right:6px">
+            <path d="M21 19V5H3V19H21Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
+              stroke-linejoin="round" />
+            <path d="M8 11L10.5 14L13 11L16 16H8L8 11Z" stroke="currentColor" stroke-width="1" />
+          </svg>
+          Gallery
+        </button>
       </div>
     </header>
 
@@ -225,8 +233,8 @@ onUnmounted(() => { disconnectPusher() })
     <div class="app-body">
 
       <!-- Left: Thumbnail gallery -->
-      <ThumbnailGallery :image-folder="imageFolder" :refresh-trigger="thumbnailRefreshTrigger"
-        @open-gallery="openGalleryScreen" />
+      <ThumbnailGallery :image-folder="imageFolder" :video-folder="videoFolder"
+        :refresh-trigger="thumbnailRefreshTrigger" @open-gallery="openGalleryScreen" />
 
       <!-- Keep OBS connect mounted (hidden) so app stays connected to OBS even when settings modal is closed -->
       <div style="display:none">
