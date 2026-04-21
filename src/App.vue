@@ -56,6 +56,7 @@ function loadGallery() {
 }
 
 function pushGalleryItem(item) {
+  console.log('pushGalleryItem', item)
   gallery.value.unshift(item)
   if (gallery.value.length > 30) gallery.value = gallery.value.slice(0, 30)
   localStorage.setItem(GALLERY_KEY, JSON.stringify(gallery.value))
@@ -98,9 +99,34 @@ function openGalleryScreen() {
 function onCaptureSuccess() {
   const folder = localStorage.getItem('setting_image_path') || ''
   addToast('📷 Photo captured!')
-  pushGalleryItem({ type: 'photo', folder, path: folder, ts: Date.now() })
+  // Optimistically add a placeholder entry (folder known)
+  pushGalleryItem({ type: 'photo', folder, path: '', ts: Date.now() })
   // Refresh thumbnails
   refreshThumbnails()
+  // Try to resolve latest saved file from the image folder and update gallery
+  if (folder) {
+    setTimeout(async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const files = await invoke('list_folder_files', {
+          folder,
+          extensions: ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
+        })
+        if (files && files.length > 0) {
+          const newest = files[0]
+          // Replace the placeholder (first matching folder without path) if present
+          const idx = gallery.value.findIndex(g => g.type === 'photo' && (g.folder === folder) && !g.path)
+          const item = { type: 'photo', folder, path: newest, ts: Date.now() }
+          if (idx === 0) gallery.value[0] = item
+          else if (idx > 0) gallery.value.splice(idx, 1, item)
+          else gallery.value.unshift(item)
+          localStorage.setItem(GALLERY_KEY, JSON.stringify(gallery.value))
+          // refresh thumbnails after resolving file
+          refreshThumbnails()
+        }
+      } catch (e) { console.warn('resolveLatestFile failed', e) }
+    }, 1500)
+  }
   // Auto-print: ask the gallery screen to print the latest image
   if (autoPrint.value && folder && galleryScreenRef.value) {
     // Give DigiCamControl a moment to save the file, then refresh + print newest
