@@ -1,5 +1,6 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { Icon } from '@iconify/vue'
 
 const DC = 'http://localhost:5513'
 
@@ -184,21 +185,6 @@ watch(() => props.obsConnected, async (val) => {
   else if (!val && active.value) stopFeed()
 })
 
-// Debug helper — logs devices and attempts a quick getUserMedia test
-async function debugDevices() {
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    console.log('Video devices', devices.filter(d => d.kind === 'videoinput'))
-    // Try to open a temporary stream to detect permission / hardware errors
-    const testStream = await navigator.mediaDevices.getUserMedia({ video: true })
-    console.log('getUserMedia test succeeded')
-    testStream.getTracks().forEach(t => t.stop())
-  } catch (err) {
-    console.error('getUserMedia test failed', err)
-    error.value = String(err)
-  }
-}
-
 onMounted(loadDevices)
 onUnmounted(() => {
   if (active.value) stopFeed()
@@ -236,13 +222,6 @@ defineExpose({
 
       <div class="toolbar-sep"></div>
 
-      <div class="toolbar-sep"></div>
-
-      <!-- Debug: list devices & test permission -->
-      <button class="tbtn" title="Debug devices" @click="debugDevices" style="opacity:0.8">
-        🔍
-      </button>
-
       <!-- Shoot -->
       <button
         class="tbtn tbtn-shoot"
@@ -251,7 +230,7 @@ defineExpose({
         title="Capture photo (Canon)"
         @click="captureFrame"
       >
-        <span class="tbtn-icon">📷</span>
+        <Icon icon="heroicons:camera" width="16" height="16" />
         <span class="tbtn-label">{{ capturing ? '…' : captureMsg || 'Shoot' }}</span>
       </button>
 

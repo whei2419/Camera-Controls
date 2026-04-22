@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import { Icon } from '@iconify/vue'
 import GalleryScreen from './components/GalleryScreen.vue'
 import LiveView from './components/LiveView.vue'
 import SettingsModal from './components/SettingsModal.vue'
@@ -57,7 +58,6 @@ function loadGallery() {
 }
 
 function pushGalleryItem(item) {
-  console.log('pushGalleryItem', item)
   gallery.value.unshift(item)
   if (gallery.value.length > 30) gallery.value = gallery.value.slice(0, 30)
   localStorage.setItem(GALLERY_KEY, JSON.stringify(gallery.value))
@@ -76,8 +76,8 @@ const thumbnailRefreshTrigger = ref(0)
 
 function refreshThumbnails() {
   thumbnailRefreshTrigger.value++
-  // Also update imageFolder ref for ThumbnailGallery
   imageFolder.value = localStorage.getItem('setting_image_path') || ''
+  videoFolder.value = localStorage.getItem('setting_video_path') || ''
 }
 
 // ── Gallery screen ────────────────────────────────────────────────
@@ -110,8 +110,6 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
   const { invoke, convertFileSrc } = await import('@tauri-apps/api/core')
   const EXTS = ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
 
-  console.log('[capture] waiting for file modified after', new Date(captureStartMs).toISOString())
-
   // Add a placeholder gallery entry while we wait
   pushGalleryItem({ type: 'photo', folder, path: '', ts: captureStartMs })
   refreshThumbnails()
@@ -124,7 +122,6 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
     try {
       const files = await invoke('list_folder_files', { folder, extensions: EXTS, sinceMs: captureStartMs })
       const newest = files[0] ?? null
-      console.log('[capture] poll', i, 'files since capture:', files.length, '| newest:', newest)
       if (!newest) continue
 
       // New file detected — replace the placeholder in the gallery
@@ -136,7 +133,6 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
       refreshThumbnails()
 
       // Upload
-      console.log('[capture] uploading', newest, '->', remoteSite.uploadCapture, '| field:', uploadCaptureFormField, '| secret:', uploadCaptureSecret ? 'set' : 'none')
       try {
         await invoke('upload_capture_file', {
           filePath: newest,
@@ -144,7 +140,6 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
           fieldName: uploadCaptureFormField,
           sharedSecret: uploadCaptureSecret,
         })
-        console.log('[capture] upload ok')
         addToast('☁️ Uploaded to server')
       } catch (uploadErr) {
         console.error('[capture] upload_capture_file failed:', uploadErr)
@@ -167,6 +162,7 @@ function onRecordSaved(path) {
   const name = path.split(/[\\\/]/).pop()
   addToast(`🎬 Saved: ${name}`)
   pushGalleryItem({ type: 'video', path, folder: '', ts: Date.now() })
+  refreshThumbnails()
   // Upload via chunked multipart — avoids timeouts on large video files
   import('@tauri-apps/api/core').then(({ invoke }) => {
     addToast('⏫ Uploading video (chunked)…')
@@ -272,14 +268,12 @@ onUnmounted(() => {
           {{ cameraInfo.name }}
           <button class="btn btn-ghost btn-xs" @click="disconnect">Disconnect</button>
         </div>
-        <button class="btn btn-ghost btn-xs settings-btn" @click="showSettingsModal = true">⚙ Settings</button>
+        <button class="btn btn-ghost btn-xs settings-btn" @click="showSettingsModal = true">
+          <Icon icon="heroicons:cog-6-tooth" width="14" height="14" style="vertical-align:middle;margin-right:4px" />
+          Settings
+        </button>
         <button class="btn btn-ghost btn-xs gallery-btn" @click="openGalleryScreen">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
-            style="vertical-align:middle;margin-right:6px">
-            <path d="M21 19V5H3V19H21Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
-              stroke-linejoin="round" />
-            <path d="M8 11L10.5 14L13 11L16 16H8L8 11Z" stroke="currentColor" stroke-width="1" />
-          </svg>
+          <Icon icon="heroicons:photo" width="14" height="14" style="vertical-align:middle;margin-right:6px" />
           Gallery
         </button>
       </div>
@@ -290,7 +284,7 @@ onUnmounted(() => {
 
       <!-- Left: Thumbnail gallery -->
       <ThumbnailGallery :image-folder="imageFolder" :video-folder="videoFolder"
-        :refresh-trigger="thumbnailRefreshTrigger" @open-gallery="openGalleryScreen" />
+        :refresh-trigger="thumbnailRefreshTrigger" @open-gallery="openGalleryScreen" @refresh="refreshThumbnails" />
 
       <!-- Keep OBS connect mounted (hidden) so app stays connected to OBS even when settings modal is closed -->
       <div style="display:none">

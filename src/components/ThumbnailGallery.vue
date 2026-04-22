@@ -2,6 +2,7 @@
 import { ref, watch, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import { Icon } from '@iconify/vue'
 
 const props = defineProps({
     imageFolder: { type: String, default: '' },
@@ -9,7 +10,7 @@ const props = defineProps({
     refreshTrigger: { type: Number, default: 0 }, // Increment to force refresh
 })
 
-const emit = defineEmits(['open-gallery'])
+const emit = defineEmits(['open-gallery', 'refresh'])
 
 const IMG_EXTS = ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
 
@@ -27,8 +28,8 @@ async function refresh() {
     loading.value = true
     try {
         const [imgFiles, vidFiles] = await Promise.all([
-            props.imageFolder ? invoke('list_folder_files', { folder: props.imageFolder, extensions: IMG_EXTS }) : Promise.resolve([]),
-            props.videoFolder ? invoke('list_folder_files', { folder: props.videoFolder, extensions: ['mp4', 'mov', 'mkv', 'avi', 'wmv'] }) : Promise.resolve([]),
+            props.imageFolder ? invoke('list_folder_files', { folder: props.imageFolder, extensions: IMG_EXTS, sinceMs: null }) : Promise.resolve([]),
+            props.videoFolder ? invoke('list_folder_files', { folder: props.videoFolder, extensions: ['mp4', 'mov', 'mkv', 'avi', 'wmv'], sinceMs: null }) : Promise.resolve([]),
         ])
         images.value = (imgFiles || []).slice(0, 40).map(p => ({ path: p, src: convertFileSrc(p) }))
         videos.value = (vidFiles || []).slice(0, 20).map(p => ({ path: p, src: convertFileSrc(p) }))
@@ -52,25 +53,12 @@ onMounted(refresh)
         <!-- Header -->
         <div class="tg-header">
             <div class="tg-title">
-                <span class="tg-icon" aria-hidden>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path
-                            d="M4 7H6L7.5 4H16.5L18 7H20C21.1 7 22 7.9 22 9V19C22 20.1 21.1 21 20 21H4C2.9 21 2 20.1 2 19V9C2 7.9 2.9 7 4 7Z"
-                            stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-                        <circle cx="12" cy="14" r="3" stroke="currentColor" stroke-width="1.2" />
-                    </svg>
-                </span>
+                <Icon icon="heroicons:camera" width="18" height="18" aria-hidden="true" />
                 <span>Recent Captures</span>
             </div>
 
-            <button class="tg-icon-btn" title="Refresh" @click="refresh">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
-                    :class="{ spin: loading }">
-                    <path d="M21 12A9 9 0 1 0 11.1 4.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M21 3V10H14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                </svg>
+            <button class="tg-icon-btn" title="Refresh" @click="emit('refresh'); refresh()">
+                <Icon icon="heroicons:arrow-path" width="14" height="14" :class="{ spin: loading }" />
             </button>
         </div>
 
@@ -80,12 +68,7 @@ onMounted(refresh)
             <!-- Empty state -->
             <div v-if="images.length === 0 && videos.length === 0 && !loading" class="tg-empty">
                 <p class="empty-ico" aria-hidden>
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path
-                            d="M4 7H6L7.5 4H16.5L18 7H20C21.1 7 22 7.9 22 9V19C22 20.1 21.1 21 20 21H4C2.9 21 2 20.1 2 19V9C2 7.9 2.9 7 4 7Z"
-                            stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-                        <circle cx="12" cy="14" r="3" stroke="currentColor" stroke-width="1.2" />
-                    </svg>
+                    <Icon icon="heroicons:camera" width="48" height="48" />
                 </p>
                 <p>No captures yet</p>
                 <p class="hint">Photos and videos will appear here after capture</p>
@@ -97,32 +80,24 @@ onMounted(refresh)
             <!-- Rows: videos then images -->
             <div v-else class="tg-rows">
                 <div class="tg-row tg-row-videos" v-if="videos.length">
-                    <div class="row-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                            xmlns="http://www.w3.org/2000/svg">
-                            <path d="M23 7L16 12L23 17V7Z" fill="currentColor" />
-                            <path d="M1 5H15V19H1V5Z" stroke="currentColor" stroke-width="1" />
-                        </svg><span>Videos</span></div>
+                    <div class="row-title">
+                        <Icon icon="heroicons:video-camera" width="14" height="14" />
+                        <span>Videos</span>
+                    </div>
                     <div class="row-grid">
                         <div v-for="v in videos" :key="v.path" class="tg-thumb tg-thumb-video small"
                             :title="v.path.split(/[\\/]/).pop()" @click="$emit('open-gallery')">
-                            <svg class="video-play-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <rect width="24" height="24" rx="4" fill="currentColor" opacity="0.12"/>
-                                <polygon points="9,7 19,12 9,17" fill="currentColor"/>
-                            </svg>
+                            <Icon icon="heroicons:play" class="video-play-icon" width="28" height="28" />
                             <span class="video-name">{{ v.path.split(/[\\/]/).pop() }}</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="tg-row tg-row-images" v-if="images.length">
-                    <div class="row-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                            xmlns="http://www.w3.org/2000/svg">
-                            <path
-                                d="M4 7H6L7.5 4H16.5L18 7H20C21.1 7 22 7.9 22 9V19C22 20.1 21.1 21 20 21H4C2.9 21 2 20.1 2 19V9C2 7.9 2.9 7 4 7Z"
-                                stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
-                                stroke-linejoin="round" />
-                            <circle cx="12" cy="14" r="3" stroke="currentColor" stroke-width="1.2" />
-                        </svg><span>Photos</span></div>
+                    <div class="row-title">
+                        <Icon icon="heroicons:camera" width="14" height="14" />
+                        <span>Photos</span>
+                    </div>
                     <div class="row-grid">
                         <div v-for="img in images" :key="img.path" class="tg-thumb small"
                             :title="img.path.split(/[\\/]/).pop()" @click="$emit('open-gallery')">
@@ -137,12 +112,7 @@ onMounted(refresh)
         <!-- Footer -->
         <div class="tg-footer">
             <button class="tg-view-btn" @click="$emit('open-gallery')">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
-                    style="vertical-align:middle;margin-right:6px">
-                    <path d="M21 19V5H3V19H21Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M8 11L10.5 14L13 11L16 16H8L8 11Z" stroke="currentColor" stroke-width="1" />
-                </svg>
+                <Icon icon="heroicons:photo" width="16" height="16" style="vertical-align:middle;margin-right:6px" />
                 View All
             </button>
         </div>
@@ -152,7 +122,7 @@ onMounted(refresh)
 
 <style scoped>
 .tg-panel {
-    width: 280px;
+    width: 448px;
     flex-shrink: 0;
     border-right: 1px solid var(--c-border);
     display: flex;
@@ -166,7 +136,7 @@ onMounted(refresh)
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 14px;
+    padding: 7px 14px;
     border-bottom: 1px solid var(--c-border);
     flex-shrink: 0;
 }
@@ -205,7 +175,9 @@ onMounted(refresh)
 }
 
 .spin {
-    display: inline-block;
+    display: block;
+    transform-box: fill-box;
+    transform-origin: center;
     animation: spin 0.8s linear infinite;
 }
 
