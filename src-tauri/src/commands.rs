@@ -120,6 +120,7 @@ pub async fn get_live_view_frame(state: State<'_, AppState>) -> Result<String, S
 pub async fn list_folder_files(
     folder: String,
     extensions: Vec<String>,
+    since_ms: Option<u64>,
 ) -> Result<Vec<String>, String> {
     use std::fs;
     use std::time::SystemTime;
@@ -139,6 +140,15 @@ pub async fn list_folder_files(
                 return None;
             }
             let modified = e.metadata().ok()?.modified().ok()?;
+            if let Some(since) = since_ms {
+                let ms = modified
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .ok()?
+                    .as_millis() as u64;
+                if ms < since {
+                    return None;
+                }
+            }
             Some((modified, path.to_string_lossy().into_owned()))
         })
         .collect();
@@ -154,8 +164,10 @@ pub async fn upload_capture_file(
     file_path: String,
     url: String,
     field_name: String,
+    shared_secret: Option<String>,
 ) -> Result<(), String> {
     use reqwest::multipart;
+    use reqwest::StatusCode;
     use std::path::Path;
     use std::time::Duration;
 
@@ -169,32 +181,300 @@ pub async fn upload_capture_file(
 
     let mime = mime_for_capture_path(path);
 
-    let part = multipart::Part::bytes(bytes)
-        .file_name(filename)
-        .mime_str(mime)
-        .map_err(|e| e.to_string())?;
-
-    let form = multipart::Form::new().part(field_name, part);
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let res = client
-        .post(&url)
-        .multipart(form)
-        .send()
+    let mut attempted = vec![field_name.clone()];
+
+    let part = multipart::Part::bytes(bytes.clone())
+        .file_name(filename.clone())
+        .mime_str(mime)
+        .map_err(|e| e.to_string())?;
+    let form = multipart::Form::new().part(field_name.clone(), part);
+
+    let mut req = client.post(&url).multipart(form);
+    if let Some(secret) = shared_secret.as_deref() {
+        let secret = secret.trim();
+        if !secret.is_empty() {
+            req = req.header("X-WEBRTC-SECRET", secret);
+        }
+    }
+
+    let mut res = req.send().await.map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        let is_missing_file = status == StatusCode::UNPROCESSABLE_ENTITY
+            && body.to_ascii_lowercase().contains("no_image_provided");
+
+        if is_missing_file {
+            let fallback = if field_name.eq_ignore_ascii_case("image") {
+                "file"
+            } else {
+                "image"
+            };
+            attempted.push(fallback.to_string());
+
+            let part = multipart::Part::bytes(bytes.clone())
+                .file_name(filename.clone())
+                .mime_str(mime)
+                .map_err(|e| e.to_string())?;
+            let form = multipart::Form::new().part(fallback.to_string(), part);
+
+            let mut req = client.post(&url).multipart(form);
+            if let Some(secret) = shared_secret.as_deref() {
+                let secret = secret.trim();
+                if !secret.is_empty() {
+                    req = req.header("X-WEBRTC-SECRET", secret);
+                }
+            }
+
+            res = req.send().await.map_err(|e| e.to_string())?;
+            if !res.status().is_success() {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                let snippet: String = body.chars().take(400).collect();
+                return Err(format!(
+                    "HTTP {} (fields tried: {}): {}",
+                    status,
+                    attempted.join(", "),
+                    snippet
+                ));
+            }
+        } else {
+            let snippet: String = body.chars().take(400).collect();
+            return Err(format!(
+                "HTTP {status} (field: {}): {snippet}",
+                attempted.join(", ")
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Upload a video file in 5 MB chunks to avoid timeouts on large files.
+/// Calls `url_chunk` once per chunk, then `url_assemble` to stitch them on the server.
+#[tauri::command]
+pub async fn upload_video_chunked(
+    file_path: String,
+    url_chunk: String,
+    url_assemble: String,
+    shared_secret: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use reqwest::multipart;
+    use std::path::Path;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio::io::AsyncReadExt;
+
+    const CHUNK_SIZE: usize = 5 * 1024 * 1024; // 5 MB per chunk
+
+    let path = Path::new(&file_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("video.mp4")
+        .to_string();
+
+    let file_size = tokio::fs::metadata(path)
         .await
+        .map_err(|e| format!("stat: {e}"))?
+        .len() as usize;
+
+    let total_chunks = (file_size + CHUNK_SIZE - 1).max(1) / CHUNK_SIZE;
+
+    // Unique upload ID: safe charset only (matches Laravel /^[a-zA-Z0-9_\-]+$/)
+    // Avoid deriving from filename because spaces/parentheses can break validation.
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let upload_id = format!("vid_{ts}");
+
+    // Client with per-chunk timeout (2 min is plenty for 5 MB)
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
         .map_err(|e| e.to_string())?;
 
-    let status = res.status();
-    if !status.is_success() {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("open: {e}"))?;
+
+    for chunk_index in 0..total_chunks {
+        let mut buf = vec![0u8; CHUNK_SIZE];
+        let n = file
+            .read(&mut buf)
+            .await
+            .map_err(|e| format!("read chunk {chunk_index}: {e}"))?;
+        buf.truncate(n);
+        if n == 0 {
+            break;
+        }
+
+        let part = multipart::Part::bytes(buf)
+            .file_name(filename.clone())
+            .mime_str("application/octet-stream")
+            .map_err(|e| e.to_string())?;
+
+        let form = multipart::Form::new()
+            .text("upload_id", upload_id.clone())
+            .text("chunk_index", chunk_index.to_string())
+            .text("total_chunks", total_chunks.to_string())
+            .text("filename", filename.clone())
+            .part("file", part);
+
+        let mut req = client.post(&url_chunk).multipart(form);
+        if let Some(s) = shared_secret.as_deref() {
+            let s = s.trim();
+            if !s.is_empty() {
+                req = req.header("X-WEBRTC-SECRET", s);
+            }
+        }
+
+        let res = req
+            .send()
+            .await
+            .map_err(|e| format!("chunk {chunk_index} send: {e}"))?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(300).collect();
+            return Err(format!("chunk {chunk_index} HTTP {status}: {snippet}"));
+        }
+    }
+
+    // Ask server to reassemble all chunks into a final file
+    let form = multipart::Form::new()
+        .text("upload_id", upload_id.clone())
+        .text("total_chunks", total_chunks.to_string())
+        .text("filename", filename.clone());
+
+    let mut req = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300)) // assembly can take a moment for big files
+        .build()
+        .map_err(|e| e.to_string())?
+        .post(&url_assemble)
+        .multipart(form);
+
+    if let Some(s) = shared_secret.as_deref() {
+        let s = s.trim();
+        if !s.is_empty() {
+            req = req.header("X-WEBRTC-SECRET", s);
+        }
+    }
+
+    let res = req.send().await.map_err(|e| format!("assemble send: {e}"))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(300).collect();
+        return Err(format!("assemble HTTP {status}: {snippet}"));
+    }
+
+    let json: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("assemble parse: {e}"))?;
+    Ok(json)
+}
+
+/// POST a video file to the Laravel `upload-video` route as a streaming multipart upload.
+/// Uses streaming so large video files (100MB+) are not loaded fully into memory.
+/// `field_name` defaults to "file" if empty. Timeout is 30 minutes.
+#[tauri::command]
+pub async fn upload_video_file(
+    file_path: String,
+    url: String,
+    field_name: String,
+    shared_secret: Option<String>,
+) -> Result<(), String> {
+    use reqwest::multipart;
+    use reqwest::StatusCode;
+    use std::path::Path;
+    use std::time::Duration;
+    use tokio::fs::File;
+    use tokio_util::io::ReaderStream;
+
+    let path = Path::new(&file_path);
+    let field = if field_name.trim().is_empty() {
+        "file".to_string()
+    } else {
+        field_name.clone()
+    };
+
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("video.mp4")
+        .to_string();
+
+    let mime = mime_for_video_path(path);
+
+    // Get file size for Content-Length (required for multipart streaming)
+    let file_len = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| format!("stat file: {e}"))?
+        .len();
+
+    let file = File::open(path)
+        .await
+        .map_err(|e| format!("open file: {e}"))?;
+
+    let stream = ReaderStream::new(file);
+    let body = reqwest::Body::wrap_stream(stream);
+
+    let part = multipart::Part::stream_with_length(body, file_len)
+        .file_name(filename.clone())
+        .mime_str(mime)
+        .map_err(|e| e.to_string())?;
+
+    let form = multipart::Form::new().part(field.clone(), part);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1800)) // 30 min for large videos
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client.post(&url).multipart(form);
+    if let Some(secret) = shared_secret.as_deref() {
+        let secret = secret.trim();
+        if !secret.is_empty() {
+            req = req.header("X-WEBRTC-SECRET", secret);
+        }
+    }
+
+    let res = req.send().await.map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        let status = res.status();
         let body = res.text().await.unwrap_or_default();
         let snippet: String = body.chars().take(400).collect();
-        return Err(format!("HTTP {status}: {snippet}"));
+        return Err(format!("HTTP {status} (field: {field}): {snippet}"));
     }
+
     Ok(())
+}
+
+fn mime_for_video_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp4") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("webm") => "video/webm",
+        Some("mkv") => "video/x-matroska",
+        Some("avi") => "video/x-msvideo",
+        Some("mts") | Some("m2ts") => "video/MP2T",
+        _ => "application/octet-stream",
+    }
 }
 
 fn mime_for_capture_path(path: &std::path::Path) -> &'static str {

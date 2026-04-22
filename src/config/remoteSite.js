@@ -25,6 +25,10 @@ export const remoteSite = Object.freeze({
   uploadCapture: `${appBaseUrl}/api/upload-capture`,
   latestCapture: `${appBaseUrl}/api/captures/latest`,
   triggerCapture: `${appBaseUrl}/api/trigger-capture`,
+  uploadVideo: `${appBaseUrl}/api/upload-video`,
+  latestVideo: `${appBaseUrl}/api/videos/latest`,
+  uploadVideoChunk: `${appBaseUrl}/api/upload-video/chunk`,
+  uploadVideoAssemble: `${appBaseUrl}/api/upload-video/assemble`,
 })
 
 /** Multipart field name for `upload-capture` — must match Laravel `$request->file(...)` key. */
@@ -32,3 +36,9 @@ export const uploadCaptureFormField =
   (import.meta.env.VITE_UPLOAD_CAPTURE_FIELD &&
     String(import.meta.env.VITE_UPLOAD_CAPTURE_FIELD).trim()) ||
   'image'
+
+/** Optional auth value for X-WEBRTC-SECRET header on upload endpoints. */
+export const uploadCaptureSecret =
+  (import.meta.env.VITE_WEBRTC_SHARED_SECRET &&
+    String(import.meta.env.VITE_WEBRTC_SHARED_SECRET).trim()) ||
+  ''

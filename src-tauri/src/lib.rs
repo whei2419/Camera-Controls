@@ -25,6 +25,8 @@ pub fn run() {
             commands::get_live_view_frame,
             commands::list_folder_files,
             commands::upload_capture_file,
+            commands::upload_video_file,
+            commands::upload_video_chunked,
             commands::list_printers,
             commands::print_file,
         ])

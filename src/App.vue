@@ -7,7 +7,7 @@ import ThumbnailGallery from './components/ThumbnailGallery.vue'
 import OBSConnect from './components/OBSConnect.vue'
 import CameraConnect from './components/CameraConnect.vue'
 import { initPusher, disconnectPusher } from './lib/pusherClient'
-import { remoteSite, uploadCaptureFormField } from './config/remoteSite.js'
+import { remoteSite, uploadCaptureFormField, uploadCaptureSecret } from './config/remoteSite.js'
 
 // ── DigiCamControl (camera settings) ──
 const connected = ref(false)
@@ -89,6 +89,7 @@ const videoFolder = ref(localStorage.getItem('setting_video_path') || '')
 
 // Ref for calling LiveView methods
 const liveViewRef = ref(null)
+let recordStopTimer = null
 
 // Pusher connection state
 const pusherConnected = ref(false)
@@ -100,7 +101,7 @@ function openGalleryScreen() {
   showGalleryScreen.value = true
 }
 
-async function onCaptureSuccess(snapshotSet = new Set()) {
+async function onCaptureSuccess(captureStartMs = Date.now()) {
   const folder = localStorage.getItem('setting_image_path') || ''
   addToast('📷 Photo captured!')
 
@@ -109,20 +110,21 @@ async function onCaptureSuccess(snapshotSet = new Set()) {
   const { invoke, convertFileSrc } = await import('@tauri-apps/api/core')
   const EXTS = ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
 
-  console.log('[capture] snapshot has', snapshotSet.size, 'files (pre-capture)')
+  console.log('[capture] waiting for file modified after', new Date(captureStartMs).toISOString())
 
   // Add a placeholder gallery entry while we wait
-  pushGalleryItem({ type: 'photo', folder, path: '', ts: Date.now() })
+  pushGalleryItem({ type: 'photo', folder, path: '', ts: captureStartMs })
   refreshThumbnails()
 
-  // Poll every 500 ms (up to 20 s) until a new file appears
+  // Poll every 500 ms (up to 20 s) for any file whose mtime >= captureStartMs
+  // Using since_ms covers both new files AND overwritten files with same name
   const MAX_ATTEMPTS = 40
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, 500))
     try {
-      const files = await invoke('list_folder_files', { folder, extensions: EXTS })
-      const newest = files.find(f => !snapshotSet.has(f)) ?? null
-      console.log('[capture] poll', i, 'newest new file:', newest)
+      const files = await invoke('list_folder_files', { folder, extensions: EXTS, sinceMs: captureStartMs })
+      const newest = files[0] ?? null
+      console.log('[capture] poll', i, 'files since capture:', files.length, '| newest:', newest)
       if (!newest) continue
 
       // New file detected — replace the placeholder in the gallery
@@ -134,12 +136,13 @@ async function onCaptureSuccess(snapshotSet = new Set()) {
       refreshThumbnails()
 
       // Upload
-      console.log('[capture] uploading', newest, '->', remoteSite.uploadCapture)
+      console.log('[capture] uploading', newest, '->', remoteSite.uploadCapture, '| field:', uploadCaptureFormField, '| secret:', uploadCaptureSecret ? 'set' : 'none')
       try {
         await invoke('upload_capture_file', {
-          file_path: newest,
+          filePath: newest,
           url: remoteSite.uploadCapture,
-          field_name: uploadCaptureFormField,
+          fieldName: uploadCaptureFormField,
+          sharedSecret: uploadCaptureSecret,
         })
         console.log('[capture] upload ok')
         addToast('☁️ Uploaded to server')
@@ -164,6 +167,21 @@ function onRecordSaved(path) {
   const name = path.split(/[\\\/]/).pop()
   addToast(`🎬 Saved: ${name}`)
   pushGalleryItem({ type: 'video', path, folder: '', ts: Date.now() })
+  // Upload via chunked multipart — avoids timeouts on large video files
+  import('@tauri-apps/api/core').then(({ invoke }) => {
+    addToast('⏫ Uploading video (chunked)…')
+    invoke('upload_video_chunked', {
+      filePath: path,
+      urlChunk: remoteSite.uploadVideoChunk,
+      urlAssemble: remoteSite.uploadVideoAssemble,
+      sharedSecret: uploadCaptureSecret || null,
+    })
+      .then(() => addToast('☁️ Video uploaded!'))
+      .catch((e) => {
+        console.error('[video upload] failed:', e)
+        addToast('Video upload failed', 'error')
+      })
+  })
 }
 
 onMounted(loadGallery)
@@ -178,7 +196,28 @@ onMounted(() => {
       onConnected: () => { pusherConnected.value = true },
       onDisconnected: () => { pusherConnected.value = false },
       onCapture: async (data) => {
-        // When remote trigger received, call LiveView.captureFrame if available
+        const mode = (data && typeof data.mode === 'string') ? data.mode.toLowerCase() : 'photo'
+        const durationSec = Math.max(3, Math.min(30, Number(data?.durationSec) || 10))
+
+        if (mode === 'video') {
+          if (recordStopTimer) {
+            clearTimeout(recordStopTimer)
+            recordStopTimer = null
+          }
+          if (liveViewRef.value?.startRecording) {
+            liveViewRef.value.startRecording()
+            addToast(`🎬 Recording ${durationSec}s`)
+            recordStopTimer = setTimeout(() => {
+              if (liveViewRef.value?.stopRecording) {
+                liveViewRef.value.stopRecording()
+              }
+              recordStopTimer = null
+            }, durationSec * 1000)
+          }
+          return
+        }
+
+        // Photo flow
         if (liveViewRef.value?.captureFrame) {
           liveViewRef.value.captureFrame()
         } else {
@@ -200,7 +239,13 @@ onMounted(() => {
   } catch (e) { console.warn('Pusher init failed', e) }
 })
 
-onUnmounted(() => { disconnectPusher() })
+onUnmounted(() => {
+  if (recordStopTimer) {
+    clearTimeout(recordStopTimer)
+    recordStopTimer = null
+  }
+  disconnectPusher()
+})
 </script>
 
 <template>

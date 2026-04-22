@@ -22,7 +22,7 @@ watch(autoPrint, v => {
 
 // ── Gallery files ───────────────────────────────────────────────────────────
 const IMG_EXTS = ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
-const VID_EXTS = ['mp4', 'mkv', 'mov', 'avi', 'wmv']
+const VID_EXTS = ['mp4', 'mkv', 'mov', 'avi', 'wmv', 'webm', 'mts', 'm2ts']
 
 const images = ref([])
 const videos = ref([])
@@ -47,7 +47,7 @@ async function refresh() {
         folder: props.videoFolder,
         extensions: VID_EXTS,
       })
-      videos.value = files.map(p => ({ path: p }))
+      videos.value = files.map(p => ({ path: p, src: convertFileSrc(p) }))
     }
   } catch { /* folders may not exist yet */ }
   loading.value = false
@@ -59,6 +59,10 @@ function fileName(p) { return p.split(/[\\\/]/).pop() }
 
 function selectImage(item) {
   selected.value = { ...item, type: 'photo' }
+}
+
+function selectVideo(item) {
+  selected.value = { ...item, type: 'video' }
 }
 
 async function openFile(path) {
@@ -190,6 +194,7 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
               <div v-for="vid in videos" :key="vid.path" class="gs-video-item">
                 <span class="gs-video-icon">🎬</span>
                 <span class="gs-video-name" :title="vid.path">{{ fileName(vid.path) }}</span>
+                <button class="gs-action-btn" @click="selectVideo(vid)">▶ Preview</button>
                 <button class="gs-action-btn" @click="openFile(vid.path)">▶ Open</button>
               </div>
             </div>
@@ -198,10 +203,19 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
           <!-- Lightbox -->
           <transition name="gs-fade">
             <div v-if="selected" class="gs-lightbox" @click.self="selected = null">
-              <img :src="selected.src" class="gs-lightbox-img" />
+              <img v-if="selected.type === 'photo'" :src="selected.src" class="gs-lightbox-img" />
+              <video
+                v-else
+                :src="selected.src"
+                class="gs-lightbox-video"
+                controls
+                autoplay
+                playsinline
+                preload="metadata"
+              ></video>
               <div class="gs-lightbox-bar">
                 <span class="gs-lightbox-name">{{ fileName(selected.path) }}</span>
-                <button @click="printImage(selected.src, selected.path)">🖨 Print</button>
+                <button v-if="selected.type === 'photo'" @click="printImage(selected.src, selected.path)">🖨 Print</button>
                 <button @click="openFile(selected.path)">↗ Open</button>
                 <button @click="selected = null">✕ Close</button>
               </div>
@@ -472,6 +486,14 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   max-width: calc(100% - 40px);
   max-height: calc(100% - 80px);
   object-fit: contain;
+  border-radius: 6px;
+}
+
+.gs-lightbox-video {
+  max-width: calc(100% - 40px);
+  max-height: calc(100% - 80px);
+  width: min(960px, calc(100% - 40px));
+  background: #000;
   border-radius: 6px;
 }
 

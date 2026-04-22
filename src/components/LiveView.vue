@@ -87,24 +87,13 @@ async function captureFrame() {
   capturing.value = true
   captureMsg.value = ''
   try {
-    // Snapshot existing files BEFORE the capture so App.vue can detect the new one
-    let snapshotSet = new Set()
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const folder = localStorage.getItem('setting_image_path') || ''
-      if (folder) {
-        const before = await invoke('list_folder_files', {
-          folder,
-          extensions: ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
-        })
-        snapshotSet = new Set(before)
-      }
-    } catch { }
+    // Record timestamp BEFORE the capture fires — used to detect new/overwritten files by mtime
+    const captureStartMs = Date.now()
 
-    await fetch(`${DC}/?CMD=Capture&_=${Date.now()}`, { mode: 'no-cors' })
+    await fetch(`${DC}/?CMD=Capture&_=${captureStartMs}`, { mode: 'no-cors' })
     captureMsg.value = 'Saved!'
     setTimeout(() => { captureMsg.value = '' }, 1500)
-    emit('capture-success', snapshotSet)
+    emit('capture-success', captureStartMs)
   } catch (e) {
     captureMsg.value = 'Failed'
     setTimeout(() => { captureMsg.value = '' }, 2000)
@@ -117,15 +106,52 @@ async function captureFrame() {
 const recording = ref(false)
 const recordingTime = ref(0)
 let recordTimer = null
+let recordingStartedAtMs = 0
+
+async function resolveLatestRecordedVideoSince(sinceMs = 0) {
+  const folder = localStorage.getItem('setting_video_path') || ''
+  if (!folder) return null
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const files = await invoke('list_folder_files', {
+      folder,
+      extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi', 'mts', 'm2ts', 'wmv'],
+      sinceMs: sinceMs || undefined,
+    })
+    return Array.isArray(files) && files.length ? files[0] : null
+  } catch {
+    return null
+  }
+}
 
 function onRecordStateChanged({ outputActive, outputPath }) {
   recording.value = outputActive
   if (outputActive) {
+    recordingStartedAtMs = Date.now()
     recordingTime.value = 0
     recordTimer = setInterval(() => { recordingTime.value++ }, 1000)
   } else {
     clearInterval(recordTimer)
-    if (outputPath) emit('record-saved', outputPath)
+    if (outputPath) {
+      emit('record-saved', outputPath)
+      return
+    }
+    // Fallback for OBS builds that don't include outputPath in the stop event.
+    // Poll for files modified after this recording started so we upload the right clip.
+    const startedAt = recordingStartedAtMs || Date.now()
+    ;(async () => {
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        const latest = await resolveLatestRecordedVideoSince(startedAt)
+        if (latest) {
+          emit('record-saved', latest)
+          return
+        }
+      }
+      // Last-resort fallback if mtime precision/flush timing is odd on filesystem.
+      const latestAny = await resolveLatestRecordedVideoSince(0)
+      if (latestAny) emit('record-saved', latestAny)
+    })()
   }
 }
 
