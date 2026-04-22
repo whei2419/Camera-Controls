@@ -256,6 +256,63 @@ pub async fn upload_capture_file(
     Ok(())
 }
 
+/// Wait until a file's size stops changing (i.e. OBS has finished flushing it).
+/// Polls every 500 ms; considers the file stable after `stable_checks` consecutive
+/// reads with the same size AND modified time. Times out after `timeout_secs`
+/// and returns an error to prevent uploading a partial/corrupted file.
+#[tauri::command]
+pub async fn wait_for_file_stable(
+    file_path: String,
+    timeout_secs: Option<u64>,
+    stable_checks: Option<u32>,
+) -> Result<u64, String> {
+    use std::path::Path;
+    use std::time::SystemTime;
+    use tokio::time::{sleep, Duration};
+
+    let path = Path::new(&file_path);
+    let max_secs = timeout_secs.unwrap_or(30);
+    let needed = stable_checks.unwrap_or(3);
+    let poll_ms = 500u64;
+    let max_polls = (max_secs * 1000 / poll_ms) as u32;
+
+    let mut prev_size: u64 = 0;
+    let mut prev_mtime: Option<SystemTime> = None;
+    let mut stable_count: u32 = 0;
+
+    for _ in 0..max_polls {
+        sleep(Duration::from_millis(poll_ms)).await;
+        let meta = match tokio::fs::metadata(path).await {
+            Ok(m) => m,
+            Err(_) => {
+                stable_count = 0;
+                prev_size = 0;
+                prev_mtime = None;
+                continue;
+            }
+        };
+
+        let size = meta.len();
+        let mtime = meta.modified().ok();
+
+        if size > 0 && size == prev_size && mtime.is_some() && mtime == prev_mtime {
+            stable_count += 1;
+            if stable_count >= needed {
+                return Ok(size);
+            }
+        } else {
+            stable_count = 0;
+            prev_size = size;
+            prev_mtime = mtime;
+        }
+    }
+
+    Err(format!(
+        "file did not stabilize within {}s (last size: {})",
+        max_secs, prev_size
+    ))
+}
+
 /// Upload a video file in 5 MB chunks to avoid timeouts on large files.
 /// Calls `url_chunk` once per chunk, then `url_assemble` to stitch them on the server.
 #[tauri::command]
@@ -368,7 +425,10 @@ pub async fn upload_video_chunked(
         }
     }
 
-    let res = req.send().await.map_err(|e| format!("assemble send: {e}"))?;
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("assemble send: {e}"))?;
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
@@ -394,11 +454,8 @@ pub async fn upload_video_file(
     shared_secret: Option<String>,
 ) -> Result<(), String> {
     use reqwest::multipart;
-    use reqwest::StatusCode;
     use std::path::Path;
     use std::time::Duration;
-    use tokio::fs::File;
-    use tokio_util::io::ReaderStream;
 
     let path = Path::new(&file_path);
     let field = if field_name.trim().is_empty() {
@@ -415,20 +472,13 @@ pub async fn upload_video_file(
 
     let mime = mime_for_video_path(path);
 
-    // Get file size for Content-Length (required for multipart streaming)
-    let file_len = tokio::fs::metadata(path)
+    let bytes = tokio::fs::read(path)
         .await
-        .map_err(|e| format!("stat file: {e}"))?
-        .len();
+        .map_err(|e| format!("read file: {e}"))?;
 
-    let file = File::open(path)
-        .await
-        .map_err(|e| format!("open file: {e}"))?;
+    let file_size_mb = bytes.len() as f64 / 1_048_576.0;
 
-    let stream = ReaderStream::new(file);
-    let body = reqwest::Body::wrap_stream(stream);
-
-    let part = multipart::Part::stream_with_length(body, file_len)
+    let part = multipart::Part::bytes(bytes)
         .file_name(filename.clone())
         .mime_str(mime)
         .map_err(|e| e.to_string())?;
@@ -454,7 +504,9 @@ pub async fn upload_video_file(
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
         let snippet: String = body.chars().take(400).collect();
-        return Err(format!("HTTP {status} (field: {field}): {snippet}"));
+        return Err(format!(
+            "HTTP {status} (field: {field}, size: {file_size_mb:.1}MB): {snippet}"
+        ));
     }
 
     Ok(())

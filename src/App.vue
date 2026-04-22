@@ -163,19 +163,25 @@ function onRecordSaved(path) {
   addToast(`🎬 Saved: ${name}`)
   pushGalleryItem({ type: 'video', path, folder: '', ts: Date.now() })
   refreshThumbnails()
-  // Upload via chunked multipart — avoids timeouts on large video files
+
+  // Wait for OBS to finish flushing the file before uploading
   import('@tauri-apps/api/core').then(({ invoke }) => {
-    addToast('⏫ Uploading video (chunked)…')
-    invoke('upload_video_chunked', {
-      filePath: path,
-      urlChunk: remoteSite.uploadVideoChunk,
-      urlAssemble: remoteSite.uploadVideoAssemble,
-      sharedSecret: uploadCaptureSecret || null,
-    })
+    addToast('⏳ Waiting for file to finish…')
+    invoke('wait_for_file_stable', { filePath: path, timeoutSecs: 30, stableChecks: 3 })
+      .then(() => {
+        addToast(`⏫ Uploading: ${name}`)
+        console.log('[video upload] path:', path, '| url:', remoteSite.uploadVideo)
+        return invoke('upload_video_file', {
+          filePath: path,
+          url: remoteSite.uploadVideo,
+          fieldName: 'video',
+          sharedSecret: uploadCaptureSecret || null,
+        })
+      })
       .then(() => addToast('☁️ Video uploaded!'))
       .catch((e) => {
         console.error('[video upload] failed:', e)
-        addToast('Video upload failed', 'error')
+        addToast(`Video upload failed: ${e}`, 'error')
       })
   })
 }

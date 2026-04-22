@@ -125,7 +125,7 @@ async function resolveLatestRecordedVideoSince(sinceMs = 0) {
   }
 }
 
-function onRecordStateChanged({ outputActive, outputPath }) {
+function onRecordStateChanged({ outputActive, outputPath, outputState }) {
   recording.value = outputActive
   if (outputActive) {
     recordingStartedAtMs = Date.now()
@@ -133,6 +133,12 @@ function onRecordStateChanged({ outputActive, outputPath }) {
     recordTimer = setInterval(() => { recordingTime.value++ }, 1000)
   } else {
     clearInterval(recordTimer)
+
+    // OBS v5 fires multiple stop events: OBS_WEBSOCKET_OUTPUT_STOPPING then OBS_WEBSOCKET_OUTPUT_STOPPED.
+    // Only act on the final STOPPED state to avoid emitting record-saved multiple times.
+    const state = outputState || ''
+    if (state && state !== 'OBS_WEBSOCKET_OUTPUT_STOPPED') return
+
     if (outputPath) {
       emit('record-saved', outputPath)
       return
@@ -140,19 +146,19 @@ function onRecordStateChanged({ outputActive, outputPath }) {
     // Fallback for OBS builds that don't include outputPath in the stop event.
     // Poll for files modified after this recording started so we upload the right clip.
     const startedAt = recordingStartedAtMs || Date.now()
-    ;(async () => {
-      for (let i = 0; i < 12; i++) {
-        await new Promise(r => setTimeout(r, 500))
-        const latest = await resolveLatestRecordedVideoSince(startedAt)
-        if (latest) {
-          emit('record-saved', latest)
-          return
+      ; (async () => {
+        for (let i = 0; i < 12; i++) {
+          await new Promise(r => setTimeout(r, 500))
+          const latest = await resolveLatestRecordedVideoSince(startedAt)
+          if (latest) {
+            emit('record-saved', latest)
+            return
+          }
         }
-      }
-      // Last-resort fallback if mtime precision/flush timing is odd on filesystem.
-      const latestAny = await resolveLatestRecordedVideoSince(0)
-      if (latestAny) emit('record-saved', latestAny)
-    })()
+        // Last-resort fallback if mtime precision/flush timing is odd on filesystem.
+        const latestAny = await resolveLatestRecordedVideoSince(0)
+        if (latestAny) emit('record-saved', latestAny)
+      })()
   }
 }
 
@@ -207,13 +213,8 @@ defineExpose({
     <!-- ── Toolbar ── -->
     <div class="lv-toolbar">
 
-      <select
-        v-if="videoDevices.length > 0"
-        v-model="selectedDevice"
-        class="device-select"
-        :disabled="active"
-        title="Select video source"
-      >
+      <select v-if="videoDevices.length > 0" v-model="selectedDevice" class="device-select" :disabled="active"
+        title="Select video source">
         <option v-for="d in videoDevices" :key="d.deviceId" :value="d.deviceId">
           {{ d.label || 'Camera ' + (videoDevices.indexOf(d) + 1) }}
         </option>
@@ -223,25 +224,16 @@ defineExpose({
       <div class="toolbar-sep"></div>
 
       <!-- Shoot -->
-      <button
-        class="tbtn tbtn-shoot"
-        :class="{ ok: captureMsg === 'Saved!', err: captureMsg === 'Failed' }"
-        :disabled="!connected || capturing"
-        title="Capture photo (Canon)"
-        @click="captureFrame"
-      >
+      <button class="tbtn tbtn-shoot" :class="{ ok: captureMsg === 'Saved!', err: captureMsg === 'Failed' }"
+        :disabled="!connected || capturing" title="Capture photo (Canon)" @click="captureFrame">
         <Icon icon="heroicons:camera" width="16" height="16" />
         <span class="tbtn-label">{{ capturing ? '…' : captureMsg || 'Shoot' }}</span>
       </button>
 
       <!-- Record -->
-      <button
-        class="tbtn tbtn-rec"
-        :class="{ active: recording }"
-        :disabled="!obsInstance"
+      <button class="tbtn tbtn-rec" :class="{ active: recording }" :disabled="!obsInstance"
         :title="obsInstance ? (recording ? 'Stop OBS recording' : 'Record via OBS') : 'Connect OBS to record'"
-        @click="recording ? stopRecording() : startRecording()"
-      >
+        @click="recording ? stopRecording() : startRecording()">
         <span class="rec-dot"></span>
         <span class="tbtn-label">{{ recording ? formatTime(recordingTime) : 'Record' }}</span>
       </button>
@@ -249,13 +241,9 @@ defineExpose({
       <div class="toolbar-sep"></div>
 
       <!-- Feed toggle -->
-      <button
-        class="tbtn tbtn-feed"
-        :class="active ? 'feed-on' : 'feed-off'"
-        :disabled="videoDevices.length === 0"
+      <button class="tbtn tbtn-feed" :class="active ? 'feed-on' : 'feed-off'" :disabled="videoDevices.length === 0"
         :title="active ? 'Disconnect feed' : (videoDevices.length ? 'Connect feed' : 'No video device')"
-        @click="toggle"
-      >
+        @click="toggle">
         <span class="feed-dot" :class="{ live: active }"></span>
         <span class="tbtn-label">{{ active ? 'Live' : 'Offline' }}</span>
       </button>
@@ -265,14 +253,7 @@ defineExpose({
     <!-- Viewport -->
     <div class="lv-viewport-wrap">
       <div class="lv-viewport" :class="{ active }">
-        <video
-          ref="videoRef"
-          v-show="active"
-          class="lv-video"
-          autoplay
-          playsinline
-          muted
-        />
+        <video ref="videoRef" v-show="active" class="lv-video" autoplay playsinline muted />
         <div v-if="!active" class="lv-placeholder">
           <span v-if="videoDevices.length === 0">No video devices found</span>
           <span v-else>Connect a device using the selector and press Live</span>
@@ -323,8 +304,15 @@ defineExpose({
   cursor: pointer;
   height: 30px;
 }
-.device-select:disabled { opacity: 0.45; cursor: not-allowed; }
-.device-select:focus { border-color: var(--c-accent); }
+
+.device-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.device-select:focus {
+  border-color: var(--c-accent);
+}
 
 .no-device {
   font-size: 0.72rem;
@@ -349,11 +337,24 @@ defineExpose({
   white-space: nowrap;
   flex-shrink: 0;
 }
-.tbtn:disabled { opacity: 0.35; cursor: not-allowed; }
-.tbtn:not(:disabled):active { opacity: 0.75; }
 
-.tbtn-icon { font-size: 0.9rem; line-height: 1; }
-.tbtn-label { font-size: 0.76rem; }
+.tbtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tbtn:not(:disabled):active {
+  opacity: 0.75;
+}
+
+.tbtn-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.tbtn-label {
+  font-size: 0.76rem;
+}
 
 /* Shoot */
 .tbtn-shoot {
@@ -361,22 +362,38 @@ defineExpose({
   color: var(--c-text);
   border-color: var(--c-border);
 }
-.tbtn-shoot:not(:disabled):hover { background: var(--c-border); }
-.tbtn-shoot.ok  { color: #4ade80; border-color: #4ade8055; background: rgba(74,222,128,0.08); }
-.tbtn-shoot.err { color: var(--c-error); border-color: var(--c-error); }
+
+.tbtn-shoot:not(:disabled):hover {
+  background: var(--c-border);
+}
+
+.tbtn-shoot.ok {
+  color: #4ade80;
+  border-color: #4ade8055;
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.tbtn-shoot.err {
+  color: var(--c-error);
+  border-color: var(--c-error);
+}
 
 /* Record */
 .tbtn-rec {
-  background: rgba(127,29,29,0.35);
+  background: rgba(127, 29, 29, 0.35);
   color: #fca5a5;
   border-color: #7f1d1d;
   display: flex;
   align-items: center;
   gap: 6px;
 }
-.tbtn-rec:not(:disabled):hover { background: rgba(153,27,27,0.5); }
+
+.tbtn-rec:not(:disabled):hover {
+  background: rgba(153, 27, 27, 0.5);
+}
+
 .tbtn-rec.active {
-  background: rgba(220,38,38,0.55);
+  background: rgba(220, 38, 38, 0.55);
   color: #fff;
   border-color: #ef4444;
   animation: rec-pulse 1.4s infinite;
@@ -391,8 +408,15 @@ defineExpose({
 }
 
 @keyframes rec-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
 }
 
 /* Feed toggle */
@@ -404,12 +428,17 @@ defineExpose({
   align-items: center;
   gap: 6px;
 }
+
 .tbtn-feed.feed-on {
-  background: rgba(59,130,246,0.12);
+  background: rgba(59, 130, 246, 0.12);
   color: var(--c-accent);
   border-color: var(--c-accent);
 }
-.tbtn-feed.feed-off:not(:disabled):hover { background: var(--c-surface-2); color: var(--c-text); }
+
+.tbtn-feed.feed-off:not(:disabled):hover {
+  background: var(--c-surface-2);
+  color: var(--c-text);
+}
 
 .feed-dot {
   width: 6px;
@@ -419,6 +448,7 @@ defineExpose({
   flex-shrink: 0;
   transition: background 0.2s;
 }
+
 .feed-dot.live {
   background: #4ade80;
   box-shadow: 0 0 5px #4ade80aa;
@@ -426,8 +456,15 @@ defineExpose({
 }
 
 @keyframes live-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
 }
 
 /* ── Viewport ────────────────────────────────────────────────────────────── */
@@ -456,7 +493,9 @@ defineExpose({
   transition: border-color 0.25s;
 }
 
-.lv-viewport.active { border-color: var(--c-accent); }
+.lv-viewport.active {
+  border-color: var(--c-accent);
+}
 
 .lv-video {
   width: 100%;
@@ -471,5 +510,9 @@ defineExpose({
   user-select: none;
 }
 
-.error-msg { margin: 0.4rem 1rem; color: var(--c-error); font-size: 0.8rem; }
+.error-msg {
+  margin: 0.4rem 1rem;
+  color: var(--c-error);
+  font-size: 0.8rem;
+}
 </style>
