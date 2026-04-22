@@ -1,23 +1,34 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import OBSConnect from './OBSConnect.vue'
 import RecordingSettings from './RecordingSettings.vue'
 import PrinterSettings from './PrinterSettings.vue'
 import CameraConnect from './CameraConnect.vue'
-import Gallery from './Gallery.vue'
+import { appBaseUrl } from '../config/remoteSite.js'
 
 const props = defineProps({
   show: Boolean,
   obsConnected: Boolean,
   obsInfo: Object,
   connected: Boolean,
-  galleryItems: Array,
   obsInstance: Object,
 })
 
-const emit = defineEmits(['close', 'obs-connected', 'obs-disconnected', 'camera-connected', 'clear-gallery'])
+const emit = defineEmits(['close', 'obs-connected', 'obs-disconnected', 'camera-connected'])
 
-const tab = ref('obs') // 'obs' | 'files' | 'printer' | 'camera' | 'recent'
+const tab = ref('obs') // 'obs' | 'files' | 'printer' | 'camera' | 'server'
+
+const serverUrl = ref('')
+onMounted(() => {
+  serverUrl.value = localStorage.getItem('setting_base_url') || appBaseUrl
+})
+function saveServerUrl() {
+  const url = serverUrl.value.trim().replace(/\/+$/, '')
+  if (url) {
+    localStorage.setItem('setting_base_url', url)
+    window.location.reload()
+  }
+}
 
 function onOBSConnected(info) {
   emit('obs-connected', info)
@@ -58,8 +69,8 @@ function onCameraConnected(info) {
             <button :class="{ active: tab === 'camera' }" @click="tab = 'camera'">
               <span class="tab-icon">📷</span> Camera
             </button>
-            <button :class="{ active: tab === 'recent' }" @click="tab = 'recent'">
-              <span class="tab-icon">📋</span> Recent
+            <button :class="{ active: tab === 'server' }" @click="tab = 'server'">
+              <span class="tab-icon">🌐</span> Server
             </button>
           </div>
 
@@ -68,10 +79,7 @@ function onCameraConnected(info) {
 
             <!-- OBS Connection -->
             <div v-if="tab === 'obs'" class="sm-section">
-              <OBSConnect
-                @connected="onOBSConnected"
-                @disconnected="onOBSDisconnected"
-              />
+              <OBSConnect @connected="onOBSConnected" @disconnected="onOBSDisconnected" />
             </div>
 
             <!-- File Paths -->
@@ -93,9 +101,15 @@ function onCameraConnected(info) {
               </div>
             </div>
 
-            <!-- Recent Files -->
-            <div v-if="tab === 'recent'" class="sm-section">
-              <Gallery :items="galleryItems" @clear="$emit('clear-gallery')" />
+            <!-- Server -->
+            <div v-if="tab === 'server'" class="sm-section">
+              <div class="server-settings">
+                <label class="field-label">Server Base URL</label>
+                <p class="field-hint">Base URL of your Laravel server (e.g. <code>http://Wowsome-micorsite.test</code>).
+                  Saved to local storage — app reloads on save.</p>
+                <input v-model="serverUrl" type="url" class="field-input" placeholder="http://Wowsome-micorsite.test" />
+                <button class="save-btn" @click="saveServerUrl">Save &amp; Reload</button>
+              </div>
             </div>
 
           </div>
@@ -111,7 +125,7 @@ function onCameraConnected(info) {
 .sm-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.85);
+  background: rgba(0, 0, 0, 0.85);
   z-index: 999;
   display: flex;
   align-items: center;
@@ -126,11 +140,11 @@ function onCameraConnected(info) {
   border: 1px solid var(--c-border);
   border-radius: 12px;
   width: min(700px, 100%);
-  max-height: min(85vh, 800px);
+  height: min(85vh, 760px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 24px 64px rgba(0,0,0,0.8);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.8);
 }
 
 /* Header */
@@ -164,6 +178,7 @@ function onCameraConnected(info) {
   justify-content: center;
   transition: background 0.13s, color 0.13s;
 }
+
 .sm-close:hover {
   background: var(--c-surface-2);
   color: var(--c-error);
@@ -240,10 +255,13 @@ function onCameraConnected(info) {
 }
 
 /* Transitions */
-.sm-fade-enter-active, .sm-fade-leave-active {
+.sm-fade-enter-active,
+.sm-fade-leave-active {
   transition: opacity 0.2s;
 }
-.sm-fade-enter-from, .sm-fade-leave-to {
+
+.sm-fade-enter-from,
+.sm-fade-leave-to {
   opacity: 0;
 }
 
@@ -252,5 +270,66 @@ function onCameraConnected(info) {
   border: none;
   border-bottom: none;
   padding: 0;
+}
+
+/* Server tab */
+.server-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--c-text-muted);
+  line-height: 1.5;
+}
+
+.field-hint code {
+  font-size: 0.78rem;
+  background: var(--c-surface-2);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.field-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  font-size: 0.88rem;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.field-input:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
+.save-btn {
+  align-self: flex-start;
+  padding: 7px 18px;
+  border-radius: 6px;
+  border: none;
+  background: var(--c-accent);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.save-btn:hover {
+  opacity: 0.82;
 }
 </style>

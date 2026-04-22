@@ -13,8 +13,12 @@ function normalizeBaseUrl(url) {
 /** Default matches Herd mapping for folder `Wowsome-micorsite` */
 const DEFAULT_APP_URL = 'http://Wowsome-micorsite.test'
 
+const storedBaseUrl = (() => {
+  try { return localStorage.getItem('setting_base_url') || '' } catch { return '' }
+})()
+
 export const appBaseUrl = normalizeBaseUrl(
-  import.meta.env.VITE_APP_URL || DEFAULT_APP_URL
+  storedBaseUrl || import.meta.env.VITE_APP_URL || DEFAULT_APP_URL
 )
 
 /** Resolved URLs for the microsite (paths match the Laravel routes) */

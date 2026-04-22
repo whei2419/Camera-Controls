@@ -322,9 +322,8 @@ onUnmounted(() => {
 
   <!-- ── Settings Modal ───────────────────────────────────────── -->
   <SettingsModal :show="showSettingsModal" :obs-connected="obsConnected" :obs-info="obsInfo" :connected="connected"
-    :gallery-items="gallery" :obs-instance="obsInfo?.obs ?? null" @close="showSettingsModal = false"
-    @obs-connected="onOBSConnected" @obs-disconnected="onOBSDisconnected" @camera-connected="onConnected"
-    @clear-gallery="clearGallery" />
+    :obs-instance="obsInfo?.obs ?? null" @close="showSettingsModal = false" @obs-connected="onOBSConnected"
+    @obs-disconnected="onOBSDisconnected" @camera-connected="onConnected" />
 
   <!-- ── Gallery Screen ───────────────────────────────────────── -->
   <GalleryScreen ref="galleryScreenRef" :show="showGalleryScreen" :image-folder="imageFolder"
