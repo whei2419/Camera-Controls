@@ -11,6 +11,8 @@ pub fn run() {
         .manage(AppState::new(CameraState::new()))
         .invoke_handler(tauri::generate_handler![
             commands::list_cameras,
+            commands::get_app_config,
+            commands::set_recording_duration_sec,
             commands::connect_camera,
             commands::disconnect_camera,
             commands::get_settings,

@@ -5,6 +5,7 @@ const DC = 'http://localhost:5513'
 
 const connecting = ref(false)
 const error = ref('')
+const PHOTO_CAPTURE_SOURCE_KEY = 'setting_photo_capture_source'
 
 const emit = defineEmits(['connected'])
 
@@ -12,7 +13,7 @@ async function connect() {
   connecting.value = true
   error.value = ''
   try {
-    const res = await fetch(`${DC}/?CMD=Capture&_=${Date.now()}`, {
+    await fetch(`${DC}/session.json?_=${Date.now()}`, {
       mode: 'no-cors',
       signal: AbortSignal.timeout(4000)
     })
@@ -25,9 +26,16 @@ async function connect() {
   }
 }
 
+function shouldAutoConnectDigicam() {
+  const source = (localStorage.getItem(PHOTO_CAPTURE_SOURCE_KEY) || 'digicamcontrol').toLowerCase()
+  return source !== 'obs'
+}
+
 // Auto-connect on mount (try to ping the local DigiCamControl server)
 onMounted(() => {
-  connect().catch(() => { })
+  if (shouldAutoConnectDigicam()) {
+    connect().catch(() => { })
+  }
 })
 </script>
 

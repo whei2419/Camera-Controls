@@ -19,14 +19,59 @@ const emit = defineEmits(['close', 'obs-connected', 'obs-disconnected', 'camera-
 const tab = ref('obs') // 'obs' | 'files' | 'printer' | 'camera' | 'server'
 
 const serverUrl = ref('')
+const RECORDING_DURATION_KEY = 'setting_recording_duration_sec'
+const recordingDurationSec = ref(20)
+const recordingSaving = ref(false)
+const recordingMsg = ref('')
+
+function normalizeRecordingDuration(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 20
+  return Math.max(3, Math.min(600, Math.round(n)))
+}
+
 onMounted(() => {
   serverUrl.value = localStorage.getItem('setting_base_url') || appBaseUrl
+  recordingDurationSec.value = normalizeRecordingDuration(localStorage.getItem(RECORDING_DURATION_KEY))
+  loadRecordingConfig()
 })
+
+async function loadRecordingConfig() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const config = await invoke('get_app_config')
+    const secs = normalizeRecordingDuration(config?.recordingDurationSec)
+    recordingDurationSec.value = secs
+    localStorage.setItem(RECORDING_DURATION_KEY, String(secs))
+  } catch {
+    // Keep local value if backend config can't be fetched.
+  }
+}
+
 function saveServerUrl() {
   const url = serverUrl.value.trim().replace(/\/+$/, '')
   if (url) {
     localStorage.setItem('setting_base_url', url)
     window.location.reload()
+  }
+}
+
+async function saveRecordingDuration() {
+  recordingSaving.value = true
+  recordingMsg.value = ''
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const secs = normalizeRecordingDuration(recordingDurationSec.value)
+    const config = await invoke('set_recording_duration_sec', { seconds: secs })
+    const persisted = normalizeRecordingDuration(config?.recordingDurationSec)
+    recordingDurationSec.value = persisted
+    localStorage.setItem(RECORDING_DURATION_KEY, String(persisted))
+    recordingMsg.value = 'Saved'
+  } catch {
+    recordingMsg.value = 'Save failed'
+  } finally {
+    recordingSaving.value = false
+    setTimeout(() => { recordingMsg.value = '' }, 2000)
   }
 }
 
@@ -109,6 +154,18 @@ function onCameraConnected(info) {
                   Saved to local storage — app reloads on save.</p>
                 <input v-model="serverUrl" type="url" class="field-input" placeholder="http://Wowsome-micorsite.test" />
                 <button class="save-btn" @click="saveServerUrl">Save &amp; Reload</button>
+
+                <div class="field-divider"></div>
+
+                <label class="field-label">Default Video Recording Duration (seconds)</label>
+                <p class="field-hint">Used when remote capture requests do not send a duration. Stored in app backend config and local app settings.</p>
+                <div class="duration-row">
+                  <input v-model.number="recordingDurationSec" type="number" min="3" max="600" step="1" class="field-input" />
+                  <button class="save-btn" :disabled="recordingSaving" @click="saveRecordingDuration">
+                    {{ recordingSaving ? 'Saving…' : 'Save Duration' }}
+                  </button>
+                </div>
+                <span v-if="recordingMsg" class="save-msg">{{ recordingMsg }}</span>
               </div>
             </div>
 
@@ -331,5 +388,22 @@ function onCameraConnected(info) {
 
 .save-btn:hover {
   opacity: 0.82;
+}
+
+.field-divider {
+  height: 1px;
+  background: var(--c-border);
+  margin: 4px 0 8px;
+}
+
+.duration-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.save-msg {
+  font-size: 0.78rem;
+  color: #4ade80;
 }
 </style>

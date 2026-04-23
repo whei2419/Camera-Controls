@@ -86,6 +86,8 @@ const galleryScreenRef = ref(null)
 const autoPrint = ref(localStorage.getItem('setting_auto_print') === 'true')
 const imageFolder = ref(localStorage.getItem('setting_image_path') || '')
 const videoFolder = ref(localStorage.getItem('setting_video_path') || '')
+const RECORDING_DURATION_KEY = 'setting_recording_duration_sec'
+const recordingDurationSec = ref(normalizeRecordingDuration(localStorage.getItem(RECORDING_DURATION_KEY)))
 
 // Ref for calling LiveView methods
 const liveViewRef = ref(null)
@@ -93,6 +95,25 @@ let recordStopTimer = null
 
 // Pusher connection state
 const pusherConnected = ref(false)
+
+function normalizeRecordingDuration(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 20
+  return Math.max(3, Math.min(600, Math.round(n)))
+}
+
+async function loadRecordingDurationConfig() {
+  // Tauri startup sync: load backend config and mirror to localStorage.
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const config = await invoke('get_app_config')
+    const secs = normalizeRecordingDuration(config?.recordingDurationSec)
+    recordingDurationSec.value = secs
+    localStorage.setItem(RECORDING_DURATION_KEY, String(secs))
+  } catch {
+    // Keep local fallback when backend config is unavailable.
+  }
+}
 
 // Keep folder refs in sync when the gallery screen opens
 function openGalleryScreen() {
@@ -187,6 +208,7 @@ function onRecordSaved(path) {
 }
 
 onMounted(loadGallery)
+onMounted(loadRecordingDurationConfig)
 // Initialize Pusher client (listen for remote triggers)
 onMounted(() => {
   try {
@@ -198,8 +220,24 @@ onMounted(() => {
       onConnected: () => { pusherConnected.value = true },
       onDisconnected: () => { pusherConnected.value = false },
       onCapture: async (data) => {
-        const mode = (data && typeof data.mode === 'string') ? data.mode.toLowerCase() : 'photo'
-        const durationSec = Math.max(3, Math.min(30, Number(data?.durationSec) || 10))
+        const payload = data && typeof data === 'object' ? data : {}
+        const nested = payload?.data && typeof payload.data === 'object' ? payload.data : {}
+
+        const rawMode =
+          (typeof payload.mode === 'string' && payload.mode) ||
+          (typeof nested.mode === 'string' && nested.mode) ||
+          ''
+
+        const payloadDuration = Number(payload?.durationSec ?? nested?.durationSec)
+        const mode = rawMode
+          ? rawMode.toLowerCase()
+          : (Number.isFinite(payloadDuration) && payloadDuration > 0 ? 'video' : 'photo')
+
+        const durationSec = normalizeRecordingDuration(
+          Number.isFinite(payloadDuration) && payloadDuration > 0
+            ? payloadDuration
+            : recordingDurationSec.value
+        )
 
         if (mode === 'video') {
           if (recordStopTimer) {

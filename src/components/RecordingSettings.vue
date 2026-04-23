@@ -5,14 +5,17 @@ const props = defineProps({ obsInstance: Object }) // OBSWebSocket instance or n
 
 const IMAGE_PATH_KEY = 'setting_image_path'
 const VIDEO_PATH_KEY = 'setting_video_path'
+const PHOTO_CAPTURE_SOURCE_KEY = 'setting_photo_capture_source'
 
 const imagePath = ref(localStorage.getItem(IMAGE_PATH_KEY) || '')
 const videoPath = ref(localStorage.getItem(VIDEO_PATH_KEY) || '')
+const photoCaptureSource = ref(localStorage.getItem(PHOTO_CAPTURE_SOURCE_KEY) || 'digicamcontrol')
 const videoMsg = ref('')
 const videoSaving = ref(false)
 
 // Persist image path on every change
 watch(imagePath, val => localStorage.setItem(IMAGE_PATH_KEY, val))
+watch(photoCaptureSource, val => localStorage.setItem(PHOTO_CAPTURE_SOURCE_KEY, val))
 
 // When OBS connects, pull the current recording directory from OBS
 watch(() => props.obsInstance, async (obs) => {
@@ -67,6 +70,15 @@ async function applyVideoPath() {
           placeholder="C:\captures\images"
           spellcheck="false"
         />
+      </div>
+
+      <div class="rset-group">
+        <label class="rset-label">Photo Capture Source</label>
+        <p class="rset-hint">Choose where photo capture comes from when you press Shoot or receive a remote photo trigger.</p>
+        <select v-model="photoCaptureSource" class="source-select">
+          <option value="digicamcontrol">DigiCamControl (USB camera)</option>
+          <option value="obs">OBS (current program scene screenshot)</option>
+        </select>
       </div>
 
       <!-- Video path -->
@@ -171,6 +183,20 @@ async function applyVideoPath() {
 }
 
 .path-input:focus {
+  border-color: var(--c-accent);
+}
+
+.source-select {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  color: var(--c-text);
+  padding: 0.4rem 0.55rem;
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.source-select:focus {
   border-color: var(--c-accent);
 }
 </style>

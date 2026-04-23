@@ -82,20 +82,70 @@ async function toggle() {
 // ── Capture (Canon camera — full quality) ────────────────────────────────────
 const capturing = ref(false)
 const captureMsg = ref('')
+const PHOTO_CAPTURE_SOURCE_KEY = 'setting_photo_capture_source'
+
+function getPhotoCaptureSource() {
+  const source = (localStorage.getItem(PHOTO_CAPTURE_SOURCE_KEY) || 'digicamcontrol').toLowerCase()
+  return source === 'obs' ? 'obs' : 'digicamcontrol'
+}
+
+async function captureViaOBS(captureStartMs) {
+  if (!props.obsConnected || !props.obsInstance || typeof props.obsInstance.call !== 'function') {
+    throw new Error('OBS is not connected')
+  }
+
+  const folder = localStorage.getItem('setting_image_path') || ''
+  if (!folder) throw new Error('Image output folder is not set')
+
+  const { currentProgramSceneName } = await props.obsInstance.call('GetCurrentProgramScene')
+  if (!currentProgramSceneName) throw new Error('No active OBS scene found')
+
+  const filename = `obs_capture_${captureStartMs}.jpg`
+  const sep = folder.includes('\\') ? '\\' : '/'
+  const imageFilePath = `${folder}${folder.endsWith('\\') || folder.endsWith('/') ? '' : sep}${filename}`
+
+  await props.obsInstance.call('SaveSourceScreenshot', {
+    sourceName: currentProgramSceneName,
+    imageFormat: 'jpg',
+    imageFilePath,
+    imageCompressionQuality: 85,
+  })
+}
+
+async function captureViaDigicam(captureStartMs) {
+  await fetch(`${DC}/?CMD=Capture&_=${captureStartMs}`, { mode: 'no-cors' })
+}
 
 async function captureFrame() {
-  if (!props.connected || capturing.value) return
+  if (capturing.value) return
   capturing.value = true
   captureMsg.value = ''
   try {
     // Record timestamp BEFORE the capture fires — used to detect new/overwritten files by mtime
     const captureStartMs = Date.now()
 
-    await fetch(`${DC}/?CMD=Capture&_=${captureStartMs}`, { mode: 'no-cors' })
+    const source = getPhotoCaptureSource()
+    if (source === 'obs') {
+      try {
+        await captureViaOBS(captureStartMs)
+      } catch (obsErr) {
+        // If OBS is unavailable but camera is connected, gracefully fall back.
+        if (props.connected) {
+          await captureViaDigicam(captureStartMs)
+        } else {
+          throw obsErr
+        }
+      }
+    } else {
+      if (!props.connected) throw new Error('Camera is not connected')
+      await captureViaDigicam(captureStartMs)
+    }
+
     captureMsg.value = 'Saved!'
     setTimeout(() => { captureMsg.value = '' }, 1500)
     emit('capture-success', captureStartMs)
   } catch (e) {
+    console.error('captureFrame error', e)
     captureMsg.value = 'Failed'
     setTimeout(() => { captureMsg.value = '' }, 2000)
   } finally {
@@ -225,7 +275,7 @@ defineExpose({
 
       <!-- Shoot -->
       <button class="tbtn tbtn-shoot" :class="{ ok: captureMsg === 'Saved!', err: captureMsg === 'Failed' }"
-        :disabled="!connected || capturing" title="Capture photo (Canon)" @click="captureFrame">
+        :disabled="capturing || (!connected && !obsInstance)" title="Capture photo" @click="captureFrame">
         <Icon icon="heroicons:camera" width="16" height="16" />
         <span class="tbtn-label">{{ capturing ? '…' : captureMsg || 'Shoot' }}</span>
       </button>

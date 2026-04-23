@@ -1,11 +1,80 @@
 // Tauri commands – exposed to the Vue frontend via invoke()
 
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
 use crate::camera::{self, CameraInfo, CameraState, SettingOptions, ShootingSettings};
 
 pub type AppState = Mutex<CameraState>;
+
+const APP_CONFIG_FILE: &str = "app-config.json";
+const RECORDING_DURATION_MIN_SEC: u64 = 3;
+const RECORDING_DURATION_MAX_SEC: u64 = 600;
+const RECORDING_DURATION_DEFAULT_SEC: u64 = 20;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfig {
+    pub recording_duration_sec: u64,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            recording_duration_sec: RECORDING_DURATION_DEFAULT_SEC,
+        }
+    }
+}
+
+fn clamp_recording_duration(seconds: u64) -> u64 {
+    seconds.clamp(RECORDING_DURATION_MIN_SEC, RECORDING_DURATION_MAX_SEC)
+}
+
+fn config_file_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let mut dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    dir.push(APP_CONFIG_FILE);
+    Ok(dir)
+}
+
+fn read_app_config(app: &tauri::AppHandle) -> Result<AppConfig, String> {
+    use std::io::ErrorKind;
+
+    let path = config_file_path(app)?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(AppConfig::default()),
+        Err(e) => return Err(e.to_string()),
+    };
+
+    let mut config: AppConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    config.recording_duration_sec = clamp_recording_duration(config.recording_duration_sec);
+    Ok(config)
+}
+
+fn write_app_config(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
+    let path = config_file_path(app)?;
+    let payload = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    std::fs::write(path, payload).map_err(|e| e.to_string())
+}
+
+// ── App config ───────────────────────────────────────────────────────────────
+#[tauri::command]
+pub async fn get_app_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
+    read_app_config(&app)
+}
+
+#[tauri::command]
+pub async fn set_recording_duration_sec(
+    app: tauri::AppHandle,
+    seconds: u64,
+) -> Result<AppConfig, String> {
+    let mut config = read_app_config(&app)?;
+    config.recording_duration_sec = clamp_recording_duration(seconds);
+    write_app_config(&app, &config)?;
+    Ok(config)
+}
 
 // ── Camera discovery ──────────────────────────────────────────────────────────
 #[tauri::command]
