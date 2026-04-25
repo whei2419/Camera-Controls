@@ -320,6 +320,31 @@ npm run tauri build
 
 The installer is output to `src-tauri/target/release/bundle/`.
 
+### Quality Checks
+
+Use these commands during development:
+
+```powershell
+# Lint the Vue / Vite app
+npm run lint
+
+# Format frontend and documentation files
+npm run format
+
+# Check Rust formatting and fail on clippy warnings
+npm run check:rust
+
+# Apply Rust formatting
+npm run format:rust
+```
+
+The Rust check flow runs:
+
+- `cargo fmt --all --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+
+That keeps the Tauri side consistent and treats new clippy warnings as failures.
+
 ---
 
 ## Project Structure
@@ -387,6 +412,29 @@ Pusher credentials are hardcoded in `App.vue`. To use your own channel, update t
 - [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar)
 - [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
 - [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+
+---
+
+## VS Code / Copilot Performance
+
+This workspace includes local VS Code exclusions in `.vscode/settings.json` to keep indexing, file watching, and search focused on source files instead of generated output.
+
+Excluded folders:
+
+- `src-tauri/target`
+- `node_modules`
+- `dist`
+- `dist-ssr`
+
+Why this helps:
+
+- Reduces editor file-watching load
+- Keeps search results cleaner
+- Improves Copilot relevance by avoiding large generated folders
+
+If VS Code still feels slow after pulling the repo, reload the window so the updated workspace settings are applied.
+
+> Note: `.vscode/settings.json` is ignored by this repository, so these performance settings stay local unless you explicitly decide to share them.
 
 ---
 

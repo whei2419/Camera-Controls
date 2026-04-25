@@ -104,6 +104,12 @@ pub struct CameraState {
     pub live_view: bool,
 }
 
+impl Default for CameraState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CameraState {
     pub fn new() -> Self {
         Self {

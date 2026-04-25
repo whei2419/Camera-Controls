@@ -180,7 +180,7 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
 }
 
 function onRecordSaved(path) {
-  const name = path.split(/[\\\/]/).pop()
+  const name = path.split(/[\\/]/).pop()
   addToast(`🎬 Saved: ${name}`)
   pushGalleryItem({ type: 'video', path, folder: '', ts: Date.now() })
   refreshThumbnails()

@@ -55,7 +55,7 @@ async function refresh() {
 
 watch(() => props.show, v => { if (v) refresh() })
 
-function fileName(p) { return p.split(/[\\\/]/).pop() }
+function fileName(p) { return p.split(/[\\/]/).pop() }
 
 function selectImage(item) {
   selected.value = { ...item, type: 'photo' }
@@ -66,25 +66,25 @@ function selectVideo(item) {
 }
 
 async function openFile(path) {
-  try { await openPath(path) } catch { await navigator.clipboard.writeText(path).catch(() => {}) }
+  try { await openPath(path) } catch { await navigator.clipboard.writeText(path).catch(() => { }) }
 }
 
 // ── Print ───────────────────────────────────────────────────────────────────
 const PAPER_CSS = {
-  '4x6':    '6in 4in',
-  '5x7':    '7in 5in',
-  '4x4':    '4in 4in',
+  '4x6': '6in 4in',
+  '5x7': '7in 5in',
+  '4x4': '4in 4in',
   'letter': '8.5in 11in',
-  'a4':     '210mm 297mm',
-  'a5':     '148mm 210mm',
+  'a4': '210mm 297mm',
+  'a5': '148mm 210mm',
 }
 
 async function printImage(src, filePath = '') {
-  const printer    = localStorage.getItem('setting_printer_name') || ''
-  const paper      = localStorage.getItem('setting_paper_size')   || '4x6'
-  const orient     = localStorage.getItem('setting_orientation')  || 'portrait'
-  const copies     = Number(localStorage.getItem('setting_copies')) || 1
-  const fit        = localStorage.getItem('setting_print_fit')    || 'contain'
+  const printer = localStorage.getItem('setting_printer_name') || ''
+  const paper = localStorage.getItem('setting_paper_size') || '4x6'
+  const orient = localStorage.getItem('setting_orientation') || 'portrait'
+  const copies = Number(localStorage.getItem('setting_copies')) || 1
+  const fit = localStorage.getItem('setting_print_fit') || 'contain'
 
   // If a printer is configured and we have a real file path → print directly (no dialog)
   if (printer && filePath) {
@@ -98,8 +98,8 @@ async function printImage(src, filePath = '') {
   }
 
   // Browser print fallback (shows print dialog)
-  const [pw, ph]   = (PAPER_CSS[paper] || '6in 4in').split(' ')
-  const pageSize   = orient === 'landscape' ? `${ph} ${pw}` : `${pw} ${ph}`
+  const [pw, ph] = (PAPER_CSS[paper] || '6in 4in').split(' ')
+  const pageSize = orient === 'landscape' ? `${ph} ${pw}` : `${pw} ${ph}`
   const copiesAttr = copies > 1 ? `<style>@page{size:${pageSize};margin:0;-webkit-print-copies:${copies}}</style>` : `<style>@page{size:${pageSize};margin:0}</style>`
 
   for (let i = 0; i < copies; i++) {
@@ -113,7 +113,7 @@ async function printImage(src, filePath = '') {
       @media print{html,body{width:${pw};height:${ph}}}
     </style></head><body><img src="${src}" onload="window.print();setTimeout(()=>window.frameElement&&window.frameElement.remove(),800)"/></body></html>`
     document.body.appendChild(iframe)
-    setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 6000)
+    setTimeout(() => { try { document.body.removeChild(iframe) } catch { } }, 6000)
     if (i < copies - 1) await new Promise(r => setTimeout(r, 1000))
   }
 }
@@ -164,22 +164,19 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
             <!-- Empty -->
             <div v-else-if="gridItems.length === 0" class="gs-empty">
               <p v-if="tab === 'photos'">
-                {{ imageFolder ? 'No photos found in: ' + imageFolder : 'Set an image save path in File Paths settings.' }}
+                {{ imageFolder ? 'No photos found in: ' + imageFolder : 'Set an image save path in File Paths settings.'
+                }}
               </p>
               <p v-else>
-                {{ videoFolder ? 'No videos found in: ' + videoFolder : 'Set a video save path in File Paths settings.' }}
+                {{ videoFolder ? 'No videos found in: ' + videoFolder : 'Set a video save path in File Paths settings.'
+                }}
               </p>
             </div>
 
             <!-- Photo grid -->
             <div v-else-if="tab === 'photos'" class="gs-grid">
-              <div
-                v-for="img in images"
-                :key="img.path"
-                class="gs-thumb"
-                :class="{ selected: selected?.path === img.path }"
-                @click="selectImage(img)"
-              >
+              <div v-for="img in images" :key="img.path" class="gs-thumb"
+                :class="{ selected: selected?.path === img.path }" @click="selectImage(img)">
                 <img :src="img.src" :alt="fileName(img.path)" loading="lazy" />
                 <div class="gs-thumb-actions">
                   <button title="Print" @click.stop="printImage(img.src, img.path)">🖨</button>
@@ -204,18 +201,12 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
           <transition name="gs-fade">
             <div v-if="selected" class="gs-lightbox" @click.self="selected = null">
               <img v-if="selected.type === 'photo'" :src="selected.src" class="gs-lightbox-img" />
-              <video
-                v-else
-                :src="selected.src"
-                class="gs-lightbox-video"
-                controls
-                autoplay
-                playsinline
-                preload="metadata"
-              ></video>
+              <video v-else :src="selected.src" class="gs-lightbox-video" controls autoplay playsinline
+                preload="metadata"></video>
               <div class="gs-lightbox-bar">
                 <span class="gs-lightbox-name">{{ fileName(selected.path) }}</span>
-                <button v-if="selected.type === 'photo'" @click="printImage(selected.src, selected.path)">🖨 Print</button>
+                <button v-if="selected.type === 'photo'" @click="printImage(selected.src, selected.path)">🖨
+                  Print</button>
                 <button @click="openFile(selected.path)">↗ Open</button>
                 <button @click="selected = null">✕ Close</button>
               </div>
@@ -233,7 +224,7 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
 .gs-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.82);
+  background: rgba(0, 0, 0, 0.82);
   z-index: 1000;
   display: flex;
   align-items: center;
@@ -250,7 +241,7 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7);
 }
 
 /* ── Header ── */
@@ -264,7 +255,10 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   gap: 1rem;
 }
 
-.gs-tabs { display: flex; gap: 4px; }
+.gs-tabs {
+  display: flex;
+  gap: 4px;
+}
 
 .gs-tab {
   display: flex;
@@ -281,7 +275,12 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   cursor: pointer;
   transition: background 0.13s, color 0.13s;
 }
-.gs-tab:hover { background: var(--c-surface-2); color: var(--c-text); }
+
+.gs-tab:hover {
+  background: var(--c-surface-2);
+  color: var(--c-text);
+}
+
 .gs-tab.active {
   background: var(--c-surface-2);
   color: var(--c-text);
@@ -296,7 +295,11 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   color: var(--c-text-muted);
 }
 
-.gs-header-actions { display: flex; align-items: center; gap: 8px; }
+.gs-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
 .gs-icon-btn {
   background: none;
@@ -312,8 +315,16 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   justify-content: center;
   transition: background 0.13s;
 }
-.gs-icon-btn:hover { background: var(--c-surface-2); color: var(--c-text); }
-.gs-close:hover { color: var(--c-error); border-color: var(--c-error); }
+
+.gs-icon-btn:hover {
+  background: var(--c-surface-2);
+  color: var(--c-text);
+}
+
+.gs-close:hover {
+  color: var(--c-error);
+  border-color: var(--c-error);
+}
 
 /* ── Auto-print toggle ── */
 .auto-print-toggle {
@@ -323,7 +334,10 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   cursor: pointer;
   user-select: none;
 }
-.auto-print-toggle input { display: none; }
+
+.auto-print-toggle input {
+  display: none;
+}
 
 .toggle-track {
   width: 34px;
@@ -334,7 +348,10 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   transition: background 0.2s;
   flex-shrink: 0;
 }
-.auto-print-toggle input:checked ~ .toggle-track { background: var(--c-accent); }
+
+.auto-print-toggle input:checked~.toggle-track {
+  background: var(--c-accent);
+}
 
 .toggle-thumb {
   position: absolute;
@@ -346,9 +363,16 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   border-radius: 50%;
   transition: transform 0.2s;
 }
-.auto-print-toggle input:checked ~ .toggle-track .toggle-thumb { transform: translateX(16px); }
 
-.toggle-label { font-size: 0.78rem; color: var(--c-text-muted); white-space: nowrap; }
+.auto-print-toggle input:checked~.toggle-track .toggle-thumb {
+  transform: translateX(16px);
+}
+
+.toggle-label {
+  font-size: 0.78rem;
+  color: var(--c-text-muted);
+  white-space: nowrap;
+}
 
 /* ── Body ── */
 .gs-body {
@@ -357,7 +381,8 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   padding: 14px;
 }
 
-.gs-loading, .gs-empty {
+.gs-loading,
+.gs-empty {
   text-align: center;
   padding: 3rem 1rem;
   color: var(--c-text-muted);
@@ -382,8 +407,14 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   cursor: pointer;
   transition: border-color 0.15s;
 }
-.gs-thumb:hover { border-color: var(--c-accent); }
-.gs-thumb.selected { border-color: var(--c-accent); }
+
+.gs-thumb:hover {
+  border-color: var(--c-accent);
+}
+
+.gs-thumb.selected {
+  border-color: var(--c-accent);
+}
 
 .gs-thumb img {
   width: 100%;
@@ -397,7 +428,7 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   bottom: 0;
   left: 0;
   right: 0;
-  background: linear-gradient(transparent, rgba(0,0,0,0.75));
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
   color: #fff;
   font-size: 0.6rem;
   padding: 14px 4px 4px;
@@ -407,7 +438,10 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   opacity: 0;
   transition: opacity 0.15s;
 }
-.gs-thumb:hover .gs-thumb-name { opacity: 1; }
+
+.gs-thumb:hover .gs-thumb-name {
+  opacity: 1;
+}
 
 .gs-thumb-actions {
   position: absolute;
@@ -418,10 +452,13 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   opacity: 0;
   transition: opacity 0.15s;
 }
-.gs-thumb:hover .gs-thumb-actions { opacity: 1; }
+
+.gs-thumb:hover .gs-thumb-actions {
+  opacity: 1;
+}
 
 .gs-thumb-actions button {
-  background: rgba(0,0,0,0.65);
+  background: rgba(0, 0, 0, 0.65);
   border: none;
   border-radius: 4px;
   color: #fff;
@@ -433,10 +470,17 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   align-items: center;
   justify-content: center;
 }
-.gs-thumb-actions button:hover { background: rgba(0,0,0,0.9); }
+
+.gs-thumb-actions button:hover {
+  background: rgba(0, 0, 0, 0.9);
+}
 
 /* ── Video list ── */
-.gs-video-list { display: flex; flex-direction: column; gap: 6px; }
+.gs-video-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
 .gs-video-item {
   display: flex;
@@ -447,7 +491,12 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   border: 1px solid var(--c-border);
   border-radius: 8px;
 }
-.gs-video-icon { font-size: 1.1rem; flex-shrink: 0; }
+
+.gs-video-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
 .gs-video-name {
   flex: 1;
   font-size: 0.82rem;
@@ -455,6 +504,7 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 .gs-action-btn {
   flex-shrink: 0;
   background: var(--c-surface);
@@ -467,13 +517,16 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   cursor: pointer;
   font-family: inherit;
 }
-.gs-action-btn:hover { background: var(--c-border); }
+
+.gs-action-btn:hover {
+  background: var(--c-border);
+}
 
 /* ── Lightbox ── */
 .gs-lightbox {
   position: absolute;
   inset: 0;
-  background: rgba(0,0,0,0.92);
+  background: rgba(0, 0, 0, 0.92);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -502,11 +555,13 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   align-items: center;
   gap: 10px;
 }
+
 .gs-lightbox-name {
   font-size: 0.78rem;
   color: var(--c-text-muted);
   font-family: monospace;
 }
+
 .gs-lightbox-bar button {
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
@@ -518,9 +573,19 @@ const gridItems = computed(() => tab.value === 'photos' ? images.value : videos.
   cursor: pointer;
   font-family: inherit;
 }
-.gs-lightbox-bar button:hover { background: var(--c-border); }
+
+.gs-lightbox-bar button:hover {
+  background: var(--c-border);
+}
 
 /* ── Transitions ── */
-.gs-fade-enter-active, .gs-fade-leave-active { transition: opacity 0.2s; }
-.gs-fade-enter-from, .gs-fade-leave-to { opacity: 0; }
+.gs-fade-enter-active,
+.gs-fade-leave-active {
+  transition: opacity 0.2s;
+}
+
+.gs-fade-enter-from,
+.gs-fade-leave-to {
+  opacity: 0;
+}
 </style>
