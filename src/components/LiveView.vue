@@ -99,7 +99,7 @@ async function captureViaOBS(captureStartMs) {
 
   let currentProgramSceneName
   try {
-    ;({ currentProgramSceneName } = await props.obsInstance.call('GetCurrentProgramScene'))
+    ; ({ currentProgramSceneName } = await props.obsInstance.call('GetCurrentProgramScene'))
   } catch (e) {
     throw new Error('OBS is not connected')
   }
@@ -117,7 +117,10 @@ async function captureViaOBS(captureStartMs) {
       imageCompressionQuality: 85,
     })
   } catch (e) {
-    throw new Error('OBS is not connected')
+    const msg = e?.message || String(e)
+    // Distinguish connection errors from screenshot errors (e.g. bad path, missing folder)
+    const isConnErr = /not connected|websocket|socket/i.test(msg)
+    throw new Error(isConnErr ? 'OBS is not connected' : `OBS screenshot failed: ${msg}`)
   }
 }
 
@@ -138,8 +141,10 @@ async function captureFrame() {
       try {
         await captureViaOBS(captureStartMs)
       } catch (obsErr) {
-        // If OBS is unavailable but camera is connected, gracefully fall back.
-        if (props.connected) {
+        // Only fall back to DigiCamControl when OBS itself is not connected.
+        // Screenshot errors (bad path, missing folder) should surface directly.
+        const isConnErr = obsErr?.message === 'OBS is not connected'
+        if (isConnErr && props.connected) {
           await captureViaDigicam(captureStartMs)
         } else {
           throw obsErr

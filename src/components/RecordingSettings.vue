@@ -12,6 +12,8 @@ const videoPath = ref(localStorage.getItem(VIDEO_PATH_KEY) || '')
 const photoCaptureSource = ref(localStorage.getItem(PHOTO_CAPTURE_SOURCE_KEY) || 'digicamcontrol')
 const videoMsg = ref('')
 const videoSaving = ref(false)
+const obsSyncFailed = ref(false)
+const obsSyncing = ref(false)
 
 // Persist image path on every change
 watch(imagePath, val => localStorage.setItem(IMAGE_PATH_KEY, val))
@@ -31,6 +33,8 @@ watch(() => props.obsInstance, async (obs) => {
 
 async function applyVideoPath() {
   if (!videoPath.value) return
+
+  // Always persist locally first
   localStorage.setItem(VIDEO_PATH_KEY, videoPath.value)
 
   if (!props.obsInstance) {
@@ -40,14 +44,33 @@ async function applyVideoPath() {
   }
 
   videoSaving.value = true
+  obsSyncFailed.value = false
   try {
     await props.obsInstance.call('SetRecordDirectory', { recordDirectory: videoPath.value })
-    videoMsg.value = 'Applied to OBS ✓'
+    videoMsg.value = 'Saved & applied to OBS ✓'
   } catch (e) {
-    videoMsg.value = 'OBS error'
+    // Local save already succeeded; OBS sync is best-effort
+    videoMsg.value = 'Saved locally (OBS sync failed)'
+    obsSyncFailed.value = true
   } finally {
     videoSaving.value = false
-    setTimeout(() => { videoMsg.value = '' }, 2000)
+    setTimeout(() => { videoMsg.value = '' }, 2500)
+  }
+}
+
+async function resyncToOBS() {
+  if (!props.obsInstance || !videoPath.value) return
+  obsSyncing.value = true
+  obsSyncFailed.value = false
+  try {
+    await props.obsInstance.call('SetRecordDirectory', { recordDirectory: videoPath.value })
+    videoMsg.value = 'OBS synced ✓'
+  } catch (e) {
+    videoMsg.value = 'OBS sync failed again'
+    obsSyncFailed.value = true
+  } finally {
+    obsSyncing.value = false
+    setTimeout(() => { videoMsg.value = '' }, 2500)
   }
 }
 </script>
@@ -64,17 +87,13 @@ async function applyVideoPath() {
       <div class="rset-group">
         <label class="rset-label">Image output</label>
         <p class="rset-hint">Where DigiCamControl saves captures (configure matching path there too)</p>
-        <input
-          v-model="imagePath"
-          class="path-input"
-          placeholder="C:\captures\images"
-          spellcheck="false"
-        />
+        <input v-model="imagePath" class="path-input" placeholder="C:\captures\images" spellcheck="false" />
       </div>
 
       <div class="rset-group">
         <label class="rset-label">Photo Capture Source</label>
-        <p class="rset-hint">Choose where photo capture comes from when you press Shoot or receive a remote photo trigger.</p>
+        <p class="rset-hint">Choose where photo capture comes from when you press Shoot or receive a remote photo
+          trigger.</p>
         <select v-model="photoCaptureSource" class="source-select">
           <option value="digicamcontrol">DigiCamControl (USB camera)</option>
           <option value="obs">OBS (current program scene screenshot)</option>
@@ -86,22 +105,16 @@ async function applyVideoPath() {
         <label class="rset-label">Video output</label>
         <p class="rset-hint">OBS recording directory</p>
         <div class="path-row">
-          <input
-            v-model="videoPath"
-            class="path-input"
-            placeholder="C:\captures\videos"
-            spellcheck="false"
-            @keydown.enter="applyVideoPath"
-          />
-          <button
-            class="btn btn-sm btn-primary"
-            :disabled="videoSaving || !videoPath"
-            @click="applyVideoPath"
-          >
+          <input v-model="videoPath" class="path-input" placeholder="C:\captures\videos" spellcheck="false"
+            @keydown.enter="applyVideoPath" />
+          <button class="btn btn-sm btn-primary" :disabled="videoSaving || !videoPath" @click="applyVideoPath">
             {{ videoSaving ? '…' : 'Apply' }}
           </button>
         </div>
-        <span v-if="videoMsg" class="rset-msg">{{ videoMsg }}</span>
+        <span v-if="videoMsg" class="rset-msg" :class="{ 'rset-msg-warn': obsSyncFailed }">{{ videoMsg }}</span>
+        <button v-if="obsSyncFailed && obsInstance" class="btn-resync" :disabled="obsSyncing" @click="resyncToOBS">
+          {{ obsSyncing ? 'Syncing…' : '↺ Retry OBS sync' }}
+        </button>
         <span v-if="!obsInstance" class="rset-hint-warn">Connect OBS to sync path automatically</span>
       </div>
 
@@ -110,7 +123,7 @@ async function applyVideoPath() {
 </template>
 
 <style scoped>
-.rset-panel { }
+.rset-panel {}
 
 .panel-header {
   display: flex;
@@ -156,6 +169,34 @@ async function applyVideoPath() {
 .rset-hint-warn {
   font-size: 0.72rem;
   color: #eab308;
+}
+
+.rset-msg-warn {
+  color: #eab308;
+}
+
+.btn-resync {
+  margin-top: 0.25rem;
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: 5px;
+  color: var(--c-text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+
+.btn-resync:hover:not(:disabled) {
+  background: var(--c-surface-2);
+  color: var(--c-text);
+}
+
+.btn-resync:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .rset-msg {

@@ -19,6 +19,7 @@ const emit = defineEmits(['close', 'obs-connected', 'obs-disconnected', 'camera-
 const tab = ref('obs') // 'obs' | 'files' | 'printer' | 'camera' | 'server'
 
 const serverUrl = ref('')
+const serverUrlMsg = ref('')
 const RECORDING_DURATION_KEY = 'setting_recording_duration_sec'
 const recordingDurationSec = ref(20)
 const recordingSaving = ref(false)
@@ -49,11 +50,27 @@ async function loadRecordingConfig() {
 }
 
 function saveServerUrl() {
-  const url = serverUrl.value.trim().replace(/\/+$/, '')
-  if (url) {
-    localStorage.setItem('setting_base_url', url)
-    window.location.reload()
+  serverUrlMsg.value = ''
+  let url = serverUrl.value.trim().replace(/\/+$/, '')
+
+  // Empty field → reset to default
+  if (!url) {
+    localStorage.removeItem('setting_base_url')
+    serverUrl.value = appBaseUrl
+    serverUrlMsg.value = `Reset to default: ${appBaseUrl}`
+    setTimeout(() => { window.location.reload() }, 800)
+    return
   }
+
+  // Basic URL validation — must start with http:// or https://
+  if (!/^https?:\/\/.+/i.test(url)) {
+    serverUrlMsg.value = 'Invalid URL — must start with http:// or https://'
+    setTimeout(() => { serverUrlMsg.value = '' }, 3000)
+    return
+  }
+
+  localStorage.setItem('setting_base_url', url)
+  window.location.reload()
 }
 
 async function saveRecordingDuration() {
@@ -152,15 +169,21 @@ function onCameraConnected(info) {
                 <label class="field-label">Server Base URL</label>
                 <p class="field-hint">Base URL of your Laravel server (e.g. <code>http://Wowsome-micorsite.test</code>).
                   Saved to local storage — app reloads on save.</p>
-                <input v-model="serverUrl" type="url" class="field-input" placeholder="http://Wowsome-micorsite.test" />
+                <input v-model="serverUrl" type="url" class="field-input"
+                  :class="{ 'field-input-error': serverUrlMsg && !serverUrlMsg.startsWith('Reset') }"
+                  placeholder="http://Wowsome-micorsite.test" />
                 <button class="save-btn" @click="saveServerUrl">Save &amp; Reload</button>
+                <span v-if="serverUrlMsg" class="save-msg"
+                  :class="{ 'save-msg-error': !serverUrlMsg.startsWith('Reset') }">{{ serverUrlMsg }}</span>
 
                 <div class="field-divider"></div>
 
                 <label class="field-label">Default Video Recording Duration (seconds)</label>
-                <p class="field-hint">Used when remote capture requests do not send a duration. Stored in app backend config and local app settings.</p>
+                <p class="field-hint">Used when remote capture requests do not send a duration. Stored in app backend
+                  config and local app settings.</p>
                 <div class="duration-row">
-                  <input v-model.number="recordingDurationSec" type="number" min="3" max="600" step="1" class="field-input" />
+                  <input v-model.number="recordingDurationSec" type="number" min="3" max="600" step="1"
+                    class="field-input" />
                   <button class="save-btn" :disabled="recordingSaving" @click="saveRecordingDuration">
                     {{ recordingSaving ? 'Saving…' : 'Save Duration' }}
                   </button>
@@ -405,5 +428,14 @@ function onCameraConnected(info) {
 .save-msg {
   font-size: 0.78rem;
   color: #4ade80;
+}
+
+.save-msg-error {
+  color: var(--c-error);
+}
+
+.field-input-error {
+  border-color: var(--c-error) !important;
+  outline-color: var(--c-error);
 }
 </style>

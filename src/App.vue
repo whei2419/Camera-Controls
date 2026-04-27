@@ -295,7 +295,6 @@ onUnmounted(() => {
     <header class="app-header">
       <div class="brand">
         <span class="brand-icon">◉</span>
-        <span class="brand-name">Canon Control</span>
       </div>
 
       <div class="header-badges">
@@ -319,6 +318,9 @@ onUnmounted(() => {
         <button class="btn btn-ghost btn-xs gallery-btn" @click="openGalleryScreen">
           <Icon icon="heroicons:photo" width="14" height="14" style="vertical-align:middle;margin-right:6px" />
           Gallery
+        </button>
+        <button class="btn btn-ghost btn-xs" title="Reload app" @click="window.location.reload()">
+          <Icon icon="heroicons:arrow-path" width="14" height="14" style="vertical-align:middle" />
         </button>
       </div>
     </header>
@@ -360,8 +362,8 @@ onUnmounted(() => {
 
   <!-- ── Settings Modal ───────────────────────────────────────── -->
   <SettingsModal :show="showSettingsModal" :obs-connected="obsConnected" :obs-info="obsInfo" :connected="connected"
-    :obs-instance="obsInfo?.obs ?? null" @close="showSettingsModal = false" @obs-connected="onOBSConnected"
-    @obs-disconnected="onOBSDisconnected" @camera-connected="onConnected" />
+    :obs-instance="obsInfo?.obs ?? null" @close="showSettingsModal = false; refreshThumbnails()"
+    @obs-connected="onOBSConnected" @obs-disconnected="onOBSDisconnected" @camera-connected="onConnected" />
 
   <!-- ── Gallery Screen ───────────────────────────────────────── -->
   <GalleryScreen ref="galleryScreenRef" :show="showGalleryScreen" :image-folder="imageFolder"
