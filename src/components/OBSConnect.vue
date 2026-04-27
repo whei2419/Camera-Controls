@@ -47,6 +47,12 @@ async function connect() {
             emit('disconnected')
         })
 
+        obs.on('ConnectionError', () => {
+            status.value = 'error'
+            obsInfo.value = null
+            emit('disconnected')
+        })
+
         const { obsWebSocketVersion } = await obs.connect(
             `ws://${host.value}:${port.value}`,
             password.value || undefined

@@ -97,19 +97,28 @@ async function captureViaOBS(captureStartMs) {
   const folder = localStorage.getItem('setting_image_path') || ''
   if (!folder) throw new Error('Image output folder is not set')
 
-  const { currentProgramSceneName } = await props.obsInstance.call('GetCurrentProgramScene')
+  let currentProgramSceneName
+  try {
+    ;({ currentProgramSceneName } = await props.obsInstance.call('GetCurrentProgramScene'))
+  } catch (e) {
+    throw new Error('OBS is not connected')
+  }
   if (!currentProgramSceneName) throw new Error('No active OBS scene found')
 
   const filename = `obs_capture_${captureStartMs}.jpg`
   const sep = folder.includes('\\') ? '\\' : '/'
   const imageFilePath = `${folder}${folder.endsWith('\\') || folder.endsWith('/') ? '' : sep}${filename}`
 
-  await props.obsInstance.call('SaveSourceScreenshot', {
-    sourceName: currentProgramSceneName,
-    imageFormat: 'jpg',
-    imageFilePath,
-    imageCompressionQuality: 85,
-  })
+  try {
+    await props.obsInstance.call('SaveSourceScreenshot', {
+      sourceName: currentProgramSceneName,
+      imageFormat: 'jpg',
+      imageFilePath,
+      imageCompressionQuality: 85,
+    })
+  } catch (e) {
+    throw new Error('OBS is not connected')
+  }
 }
 
 async function captureViaDigicam(captureStartMs) {
