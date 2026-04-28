@@ -261,6 +261,41 @@ pub async fn read_file_chunk(
     Ok(BASE64_STANDARD.encode(&buf))
 }
 
+/// Read `length` bytes from `file_path` starting at `offset`, returned as raw binary.
+/// The JavaScript caller receives an `ArrayBuffer` — no base64 encode/decode overhead.
+#[tauri::command]
+pub async fn read_file_chunk_bytes(
+    file_path: String,
+    offset: u64,
+    length: u64,
+) -> Result<tauri::ipc::Response, String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+
+    let mut file = tokio::fs::File::open(&file_path)
+        .await
+        .map_err(|e| format!("open: {e}"))?;
+
+    file.seek(SeekFrom::Start(offset))
+        .await
+        .map_err(|e| format!("seek: {e}"))?;
+
+    let mut buf = vec![0u8; length as usize];
+    let mut total_read = 0usize;
+    while total_read < length as usize {
+        let n = file
+            .read(&mut buf[total_read..])
+            .await
+            .map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        total_read += n;
+    }
+    buf.truncate(total_read);
+
+    Ok(tauri::ipc::Response::new(buf))
+}
+
 /// POST the capture file to the Laravel `upload-capture` route.
 #[tauri::command]
 pub async fn upload_capture_file(

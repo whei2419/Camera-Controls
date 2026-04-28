@@ -10,10 +10,10 @@
  * Performance tuning:
  *   - CHUNK_SIZE: 8 MB — fewer round trips, within Apache 512 MB limit
  *   - CONCURRENCY: 5 parallel in-flight chunks
- *   - Binary body (not base64 JSON) eliminates 33% wire overhead and
- *     removes server-side base64_decode cost
+ *   - Binary body (not base64 JSON) eliminates 33% wire overhead
  *   - Metadata in URL query params — Apache parses query strings before
  *     touching the body, so upload_id/filename are always reliable
+ *   - Per-chunk timing logged to console for profiling
  *
  * @param {object} options
  * @param {import('@tauri-apps/api/core').invoke} options.invoke  - Tauri invoke fn
@@ -40,26 +40,24 @@ export async function uploadVideoChunked({
   const uploadId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
   let chunksDone = 0
+  const uploadStart = performance.now()
 
   /**
-   * Read one chunk from disk via Rust and POST it to the server as raw binary.
-   * Metadata goes in query params — Apache parses those before reading the body.
+   * Read one chunk from disk via Rust IPC (base64 string), decode to raw bytes,
+   * and POST as application/octet-stream. Metadata in query params.
    */
   async function uploadChunk(chunkIndex) {
     const offset = chunkIndex * CHUNK_SIZE
     const length = Math.min(CHUNK_SIZE, fileSize - offset)
 
-    // Read chunk from local disk via Rust IPC (returns base64 string)
+    const t0 = performance.now()
     const chunkB64 = await invoke('read_file_chunk', { filePath, offset, length })
+    const t1 = performance.now()
 
-    // Decode base64 → raw bytes to avoid 33% wire overhead and server-side decode
-    const binaryStr = atob(chunkB64)
-    const bytes = new Uint8Array(binaryStr.length)
-    for (let i = 0; i < binaryStr.length; i++) {
-      bytes[i] = binaryStr.charCodeAt(i)
-    }
+    // Decode base64 → Uint8Array (no wire overhead — only IPC overhead)
+    const bytes = Uint8Array.from(atob(chunkB64), (c) => c.charCodeAt(0))
+    const t2 = performance.now()
 
-    // Metadata in query params — always reliable regardless of body size
     const params = new URLSearchParams({
       upload_id: uploadId,
       chunk_index: chunkIndex,
@@ -72,6 +70,13 @@ export async function uploadVideoChunked({
       headers: { 'Content-Type': 'application/octet-stream', Accept: 'application/json' },
       body: bytes,
     })
+    const t3 = performance.now()
+
+    console.log(
+      `[chunk ${chunkIndex}/${totalChunks - 1}] ` +
+        `read=${Math.round(t1 - t0)}ms decode=${Math.round(t2 - t1)}ms ` +
+        `upload=${Math.round(t3 - t2)}ms total=${Math.round(t3 - t0)}ms`,
+    )
 
     if (!res.ok) {
       const text = await res.text().catch(() => '')
@@ -82,18 +87,17 @@ export async function uploadVideoChunked({
     onProgress?.(chunksDone, totalChunks)
   }
 
-  // Upload all chunks with bounded concurrency
-  const indices = Array.from({ length: totalChunks }, (_, i) => i)
-  const queue = [...indices]
+  const queue = Array.from({ length: totalChunks }, (_, i) => i)
 
   async function worker() {
     while (queue.length > 0) {
-      const idx = queue.shift()
-      await uploadChunk(idx)
+      await uploadChunk(queue.shift())
     }
   }
 
   await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+
+  console.log(`[video upload] all ${totalChunks} chunks done in ${Math.round(performance.now() - uploadStart)}ms`)
 
   // All chunks uploaded — trigger server-side assembly
   const assembleRes = await fetch(urlAssemble, {
