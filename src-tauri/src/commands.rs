@@ -528,35 +528,33 @@ pub async fn wait_for_file_stable(
     stable_checks: Option<u32>,
 ) -> Result<u64, String> {
     use std::path::Path;
-    use std::time::SystemTime;
     use tokio::time::{sleep, Duration};
 
     let path = Path::new(&file_path);
     let max_secs = timeout_secs.unwrap_or(30);
-    let needed = stable_checks.unwrap_or(3);
+    let needed = stable_checks.unwrap_or(2); // 2 × 500ms = 1s of size stability is sufficient
     let poll_ms = 500u64;
     let max_polls = (max_secs * 1000 / poll_ms) as u32;
 
     let mut prev_size: u64 = 0;
-    let mut prev_mtime: Option<SystemTime> = None;
     let mut stable_count: u32 = 0;
 
     for _ in 0..max_polls {
         sleep(Duration::from_millis(poll_ms)).await;
-        let meta = match tokio::fs::metadata(path).await {
-            Ok(m) => m,
+        let size = match tokio::fs::metadata(path).await {
+            Ok(m) => m.len(),
             Err(_) => {
                 stable_count = 0;
                 prev_size = 0;
-                prev_mtime = None;
                 continue;
             }
         };
 
-        let size = meta.len();
-        let mtime = meta.modified().ok();
-
-        if size > 0 && size == prev_size && mtime.is_some() && mtime == prev_mtime {
+        // Check size-only stability. mtime is intentionally excluded: on Windows,
+        // NTFS updates mtime lazily (antivirus, thumbnail generator, buffer flush)
+        // even after the writer has closed the file, which caused the full 30s
+        // timeout to always fire.
+        if size > 0 && size == prev_size {
             stable_count += 1;
             if stable_count >= needed {
                 return Ok(size);
@@ -564,7 +562,6 @@ pub async fn wait_for_file_stable(
         } else {
             stable_count = 0;
             prev_size = size;
-            prev_mtime = mtime;
         }
     }
 

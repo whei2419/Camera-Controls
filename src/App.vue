@@ -205,7 +205,7 @@ function onRecordSaved(path) {
   // Wait for OBS to finish flushing the file before uploading
   import('@tauri-apps/api/core').then(({ invoke }) => {
     addToast('⏳ Waiting for file to finish…')
-    invoke('wait_for_file_stable', { filePath: path, timeoutSecs: 30, stableChecks: 3 })
+    invoke('wait_for_file_stable', { filePath: path, timeoutSecs: 30, stableChecks: 2 })
       .then((fileSize) => {
         addToast(`⏫ Uploading: ${name}`)
         console.log('[video upload] JS chunked upload for:', path, '| size:', fileSize)

@@ -37,13 +37,16 @@ export async function uploadVideoChunked({
   const uploadId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
   let chunksDone = 0
+  const t0Total = performance.now()
 
   async function uploadChunk(chunkIndex, attempt = 0) {
     const offset = chunkIndex * CHUNK_SIZE
     const length = Math.min(CHUNK_SIZE, fileSize - offset)
 
     // Read from local disk via Rust IPC — returns base64 string
+    const t0 = performance.now()
     const chunkB64 = await invoke('read_file_chunk', { filePath, offset, length })
+    const t1 = performance.now()
 
     // Decode base64 → raw bytes — no base64 on the wire, only in IPC
     const binaryStr = atob(chunkB64)
@@ -51,6 +54,7 @@ export async function uploadVideoChunked({
     for (let i = 0; i < binaryStr.length; i++) {
       bytes[i] = binaryStr.charCodeAt(i)
     }
+    const t2 = performance.now()
 
     const params = new URLSearchParams({
       upload_id: uploadId,
@@ -77,6 +81,11 @@ export async function uploadVideoChunked({
         `Chunk ${chunkIndex} network error after ${attempt + 1} attempts: ${networkErr.message}`,
       )
     }
+    const t3 = performance.now()
+
+    console.log(
+      `[chunk ${chunkIndex}] ipc-read=${Math.round(t1 - t0)}ms  decode=${Math.round(t2 - t1)}ms  upload=${Math.round(t3 - t2)}ms  total=${Math.round(t3 - t0)}ms`,
+    )
 
     if (!res.ok) {
       const text = await res.text().catch(() => '')
@@ -101,6 +110,7 @@ export async function uploadVideoChunked({
   }
 
   await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+  console.log(`[upload] all chunks done in ${Math.round(performance.now() - t0Total)}ms — starting assembly`)
 
   // All chunks stored — trigger server-side assembly
   const assembleRes = await fetch(urlAssemble, {
