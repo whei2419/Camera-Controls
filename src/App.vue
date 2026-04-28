@@ -9,6 +9,7 @@ import OBSConnect from './components/OBSConnect.vue'
 import CameraConnect from './components/CameraConnect.vue'
 import { initPusher, disconnectPusher } from './lib/pusherClient'
 import { remoteSite, uploadCaptureFormField } from './config/remoteSite.js'
+import { uploadVideoChunked } from './lib/videoChunkUpload.js'
 
 // ── DigiCamControl (camera settings) ──
 const connected = ref(false)
@@ -205,13 +206,18 @@ function onRecordSaved(path) {
   import('@tauri-apps/api/core').then(({ invoke }) => {
     addToast('⏳ Waiting for file to finish…')
     invoke('wait_for_file_stable', { filePath: path, timeoutSecs: 30, stableChecks: 3 })
-      .then(() => {
+      .then((fileSize) => {
         addToast(`⏫ Uploading: ${name}`)
-        console.log('[video upload] using base64 JSON chunked upload for:', path)
-        return invoke('upload_video_chunked', {
+        console.log('[video upload] JS chunked upload for:', path, '| size:', fileSize)
+        return uploadVideoChunked({
+          invoke,
           filePath: path,
+          fileSize,
           urlChunk: remoteSite.uploadVideoChunk,
           urlAssemble: remoteSite.uploadVideoAssemble,
+          onProgress: (done, total) => {
+            console.log(`[video upload] chunk ${done}/${total}`)
+          },
         })
       })
       .then(() => addToast('☁️ Video uploaded!'))

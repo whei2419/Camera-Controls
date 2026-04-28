@@ -226,6 +226,41 @@ pub async fn list_folder_files(
     Ok(entries.into_iter().map(|(_, p)| p).collect())
 }
 
+/// Read `length` bytes from `file_path` starting at `offset`, returned as a base64 string.
+/// Used by the Vue frontend to read local file chunks for browser-side fetch() uploads.
+#[tauri::command]
+pub async fn read_file_chunk(
+    file_path: String,
+    offset: u64,
+    length: u64,
+) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+
+    let mut file = tokio::fs::File::open(&file_path)
+        .await
+        .map_err(|e| format!("open: {e}"))?;
+
+    file.seek(SeekFrom::Start(offset))
+        .await
+        .map_err(|e| format!("seek: {e}"))?;
+
+    let mut buf = vec![0u8; length as usize];
+    let mut total_read = 0usize;
+    while total_read < length as usize {
+        let n = file
+            .read(&mut buf[total_read..])
+            .await
+            .map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        total_read += n;
+    }
+    buf.truncate(total_read);
+
+    Ok(BASE64_STANDARD.encode(&buf))
+}
+
 /// POST the capture file to the Laravel `upload-capture` route.
 #[tauri::command]
 pub async fn upload_capture_file(
@@ -322,14 +357,15 @@ pub async fn wait_for_file_stable(
     Err(format!("file did not stabilize within {}s", max_secs))
 }
 
-/// Upload a video file in sequential 1MB chunks to avoid memory exhaustion and race conditions.
+/// Upload a video file in sequential 1 MB base64-JSON chunks.
+/// Chunks are sent as application/json (not multipart) to bypass PHP's $_FILES stack,
+/// which fails on Apache/mod_reqtimeout with UPLOAD_ERR_PARTIAL.
 #[tauri::command]
 pub async fn upload_video_chunked(
     file_path: String,
     url_chunk: String,
     url_assemble: String,
 ) -> Result<serde_json::Value, String> {
-    use reqwest::multipart;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -353,7 +389,8 @@ pub async fn upload_video_chunked(
     let upload_id = format!("vid_{ts}");
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .use_native_tls()
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -361,52 +398,80 @@ pub async fn upload_video_chunked(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Sequential Upload Loop
+    // Sequential Upload Loop — JSON + base64, bypasses PHP $_FILES entirely
     for chunk_index in 0..total_chunks {
         file.seek(SeekFrom::Start(chunk_index * CHUNK_SIZE))
             .await
             .map_err(|e| e.to_string())?;
 
+        // Fill the buffer completely (read() may return fewer bytes than requested).
         let mut buf = vec![0u8; CHUNK_SIZE as usize];
-        let n = file.read(&mut buf).await.map_err(|e| e.to_string())?;
-        buf.truncate(n);
+        let mut total_read = 0usize;
+        while total_read < CHUNK_SIZE as usize {
+            let n = file
+                .read(&mut buf[total_read..])
+                .await
+                .map_err(|e| e.to_string())?;
+            if n == 0 {
+                break; // EOF
+            }
+            total_read += n;
+        }
+        buf.truncate(total_read);
 
-        let part = multipart::Part::bytes(buf)
-            .file_name("chunk.bin")
-            .mime_str("application/octet-stream")
-            .map_err(|e| e.to_string())?;
+        let chunk_b64 = BASE64_STANDARD.encode(&buf);
 
-        let form = multipart::Form::new()
-            .text("upload_id", upload_id.clone())
-            .text("chunk_index", chunk_index.to_string())
-            .text("total_chunks", total_chunks.to_string())
-            .text("filename", filename.clone())
-            .part("chunk_data", part);
+        let body = serde_json::json!({
+            "upload_id":    upload_id,
+            "chunk_index":  chunk_index,
+            "total_chunks": total_chunks,
+            "filename":     filename,
+            "chunk_data":   chunk_b64,
+        });
 
         let res = client
             .post(&url_chunk)
-            .multipart(form)
+            .header("Accept", "application/json")
+            .json(&body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
         if !res.status().is_success() {
-            return Err(format!("Failed chunk {}: {}", chunk_index, res.status()));
+            let status = res.status();
+            let body_text = res.text().await.unwrap_or_default();
+            return Err(format!(
+                "Failed chunk {chunk_index}: {status} — {body_text}"
+            ));
         }
+
+        eprintln!(
+            "[upload_video_chunked] chunk {}/{} ok",
+            chunk_index + 1,
+            total_chunks
+        );
     }
 
-    // Assembly
-    let form = multipart::Form::new()
-        .text("upload_id", upload_id)
-        .text("total_chunks", total_chunks.to_string())
-        .text("filename", filename);
+    // Assemble — plain JSON, no binary
+    let assemble_body = serde_json::json!({
+        "upload_id":    upload_id,
+        "total_chunks": total_chunks,
+        "filename":     filename,
+    });
 
     let res = client
         .post(&url_assemble)
-        .multipart(form)
+        .header("Accept", "application/json")
+        .json(&assemble_body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let body_text = res.text().await.unwrap_or_default();
+        return Err(format!("Assemble failed: {status} — {body_text}"));
+    }
 
     res.json().await.map_err(|e| e.to_string())
 }
@@ -444,6 +509,7 @@ pub async fn upload_video_resumable(
     let upload_id = format!("{}-{}", file_size, filename_safe.replace('.', ""));
 
     let client = reqwest::Client::builder()
+        .use_native_tls()
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| e.to_string())?;
@@ -452,12 +518,25 @@ pub async fn upload_video_resumable(
         .map_err(|e| format!("open: {e}"))?;
 
     for chunk_number in 1..=total_chunks {
+        // Use a fill-loop: a single read() may return fewer bytes than requested
+        // even in the middle of a file, which would corrupt reassembly on the server.
         let mut buf = vec![0u8; CHUNK_SIZE];
-        let n = file
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("read chunk {chunk_number}: {e}"))?;
-        buf.truncate(n);
+        let mut total_read = 0usize;
+        loop {
+            let n = file
+                .read(&mut buf[total_read..])
+                .await
+                .map_err(|e| format!("read chunk {chunk_number}: {e}"))?;
+            if n == 0 {
+                break; // EOF
+            }
+            total_read += n;
+            if total_read >= CHUNK_SIZE {
+                break;
+            }
+        }
+        buf.truncate(total_read);
+        let n = total_read;
         if n == 0 {
             break;
         }
