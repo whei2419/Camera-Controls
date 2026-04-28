@@ -8,7 +8,7 @@ import ThumbnailGallery from './components/ThumbnailGallery.vue'
 import OBSConnect from './components/OBSConnect.vue'
 import CameraConnect from './components/CameraConnect.vue'
 import { initPusher, disconnectPusher } from './lib/pusherClient'
-import { remoteSite, uploadCaptureFormField, uploadCaptureSecret } from './config/remoteSite.js'
+import { remoteSite, uploadCaptureFormField } from './config/remoteSite.js'
 
 // ── DigiCamControl (camera settings) ──
 const connected = ref(false)
@@ -123,10 +123,14 @@ function openGalleryScreen() {
 }
 
 async function onCaptureSuccess(captureStartMs = Date.now()) {
+  console.log('[capture] onCaptureSuccess called, captureStartMs:', captureStartMs)
   const folder = localStorage.getItem('setting_image_path') || ''
   addToast('📷 Photo captured!')
 
-  if (!folder) return
+  if (!folder) {
+    console.warn('[capture] no image folder set — aborting upload')
+    return
+  }
 
   const { invoke, convertFileSrc } = await import('@tauri-apps/api/core')
   const EXTS = ['jpg', 'jpeg', 'png', 'cr2', 'cr3', 'nef', 'arw', 'tif', 'tiff']
@@ -138,13 +142,16 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
   // Poll every 500 ms (up to 20 s) for any file whose mtime >= captureStartMs
   // Using since_ms covers both new files AND overwritten files with same name
   const MAX_ATTEMPTS = 40
+  let fileFound = false
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, 500))
     try {
       const files = await invoke('list_folder_files', { folder, extensions: EXTS, sinceMs: captureStartMs })
+      console.log(`[capture] poll ${i + 1}/${MAX_ATTEMPTS} — found ${files.length} file(s):`, files)
       const newest = files[0] ?? null
       if (!newest) continue
 
+      fileFound = true
       // New file detected — replace the placeholder in the gallery
       const idx = gallery.value.findIndex(g => g.type === 'photo' && g.folder === folder && !g.path)
       const item = { type: 'photo', folder, path: newest, ts: Date.now() }
@@ -154,17 +161,17 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
       refreshThumbnails()
 
       // Upload
+      console.log('[upload] filePath:', newest, '| url:', remoteSite.uploadCapture, '| field:', uploadCaptureFormField)
       try {
         await invoke('upload_capture_file', {
           filePath: newest,
           url: remoteSite.uploadCapture,
           fieldName: uploadCaptureFormField,
-          sharedSecret: uploadCaptureSecret,
         })
         addToast('☁️ Uploaded to server')
       } catch (uploadErr) {
         console.error('[capture] upload_capture_file failed:', uploadErr)
-        addToast('Upload to server failed', 'error')
+        addToast(`Upload failed: ${uploadErr}`, 'error')
       }
 
       // Auto-print
@@ -176,6 +183,15 @@ async function onCaptureSuccess(captureStartMs = Date.now()) {
     } catch (loopErr) {
       console.error('[capture] poll loop error:', loopErr)
     }
+  }
+
+  if (!fileFound) {
+    // Remove the placeholder that was added at the start
+    const idx = gallery.value.findIndex(g => g.type === 'photo' && g.folder === folder && !g.path)
+    if (idx >= 0) gallery.value.splice(idx, 1)
+    localStorage.setItem(GALLERY_KEY, JSON.stringify(gallery.value))
+    refreshThumbnails()
+    addToast('No file found in output folder after capture', 'error')
   }
 }
 
@@ -196,7 +212,6 @@ function onRecordSaved(path) {
           filePath: path,
           url: remoteSite.uploadVideo,
           fieldName: 'video',
-          sharedSecret: uploadCaptureSecret || null,
         })
       })
       .then(() => addToast('☁️ Video uploaded!'))
@@ -220,6 +235,7 @@ onMounted(() => {
       onConnected: () => { pusherConnected.value = true },
       onDisconnected: () => { pusherConnected.value = false },
       onCapture: async (data) => {
+        console.log('[pusher] onCapture received', data)
         const payload = data && typeof data === 'object' ? data : {}
         const nested = payload?.data && typeof payload.data === 'object' ? payload.data : {}
 
@@ -233,6 +249,7 @@ onMounted(() => {
           ? rawMode.toLowerCase()
           : (Number.isFinite(payloadDuration) && payloadDuration > 0 ? 'video' : 'photo')
 
+        console.log('[pusher] mode:', mode, '| durationSec from payload:', payloadDuration)
         const durationSec = normalizeRecordingDuration(
           Number.isFinite(payloadDuration) && payloadDuration > 0
             ? payloadDuration
@@ -258,7 +275,9 @@ onMounted(() => {
         }
 
         // Photo flow
+        console.log('[pusher] triggering photo capture, liveViewRef:', !!liveViewRef.value)
         if (liveViewRef.value?.captureFrame) {
+          console.log('[pusher] calling captureFrame()')
           liveViewRef.value.captureFrame()
         } else {
           // Fallback: call DigiCamControl capture directly
@@ -286,6 +305,10 @@ onUnmounted(() => {
   }
   disconnectPusher()
 })
+
+function reloadApp() {
+  window.location.reload()
+}
 </script>
 
 <template>
@@ -319,7 +342,7 @@ onUnmounted(() => {
           <Icon icon="heroicons:photo" width="14" height="14" style="vertical-align:middle;margin-right:6px" />
           Gallery
         </button>
-        <button class="btn btn-ghost btn-xs" title="Reload app" @click="window.location.reload()">
+        <button class="btn btn-ghost btn-xs" title="Reload app" @click="reloadApp">
           <Icon icon="heroicons:arrow-path" width="14" height="14" style="vertical-align:middle" />
         </button>
       </div>
@@ -344,7 +367,8 @@ onUnmounted(() => {
       <!-- Main area: live view only -->
       <section class="main-area">
         <LiveView ref="liveViewRef" :obs-connected="obsConnected" :connected="connected"
-          :obs-instance="obsInfo?.obs ?? null" @capture-success="onCaptureSuccess" @record-saved="onRecordSaved" />
+          :obs-instance="obsInfo?.obs ?? null" @capture-success="onCaptureSuccess" @record-saved="onRecordSaved"
+          @capture-error="msg => addToast('📷 ' + msg, 'error')" />
       </section>
 
     </div>
@@ -354,7 +378,7 @@ onUnmounted(() => {
   <!-- ── Toast notifications ─────────────────────────────────────────── -->
   <div class="toast-wrap">
     <transition-group name="toast">
-      <div v-for="t in toasts" :key="t.id" class="toast">
+      <div v-for="t in toasts" :key="t.id" class="toast" :class="{ 'toast-error': t.type === 'error' }">
         {{ t.message }}
       </div>
     </transition-group>
@@ -627,6 +651,11 @@ body {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
   min-width: 200px;
   backdrop-filter: blur(8px);
+}
+
+.toast-error {
+  border-color: #f8717155;
+  color: var(--c-error);
 }
 
 .toast-enter-active,

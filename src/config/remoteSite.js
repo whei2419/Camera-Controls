@@ -41,8 +41,3 @@ export const uploadCaptureFormField =
     String(import.meta.env.VITE_UPLOAD_CAPTURE_FIELD).trim()) ||
   'image'
 
-/** Optional auth value for X-WEBRTC-SECRET header on upload endpoints. */
-export const uploadCaptureSecret =
-  (import.meta.env.VITE_WEBRTC_SHARED_SECRET &&
-    String(import.meta.env.VITE_WEBRTC_SHARED_SECRET).trim()) ||
-  ''

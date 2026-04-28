@@ -5,7 +5,7 @@ import { Icon } from '@iconify/vue'
 const DC = 'http://localhost:5513'
 
 const props = defineProps({ obsConnected: Boolean, connected: Boolean, obsInstance: Object })
-const emit = defineEmits(['capture-success', 'record-saved'])
+const emit = defineEmits(['capture-success', 'record-saved', 'capture-error'])
 
 const active = ref(false)
 const error = ref('')
@@ -161,6 +161,7 @@ async function captureFrame() {
   } catch (e) {
     console.error('captureFrame error', e)
     captureMsg.value = 'Failed'
+    emit('capture-error', e?.message || String(e))
     setTimeout(() => { captureMsg.value = '' }, 2000)
   } finally {
     capturing.value = false

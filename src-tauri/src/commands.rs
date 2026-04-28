@@ -227,102 +227,76 @@ pub async fn list_folder_files(
 }
 
 /// POST the capture file to the Laravel `upload-capture` route as multipart form-data.
-/// `field_name` must match the key used in `$request->file(...)` on the server (often `image`).
+/// POST a photo/capture file to the Laravel `upload-capture` route as a base64 data URI
+/// in a JSON body: `{"image": "data:image/jpeg;base64,..."}`.
+///
+/// The server's CaptureUploadController already handles this path
+/// (`$request->filled('image')` branch). Sending JSON avoids all multipart/form-data
+/// parsing on Apache/PHP-FPM, which was causing UPLOAD_ERR_PARTIAL regardless of
+/// Content-Length, HTTP version, or TLS backend.
 #[tauri::command]
 pub async fn upload_capture_file(
     file_path: String,
     url: String,
-    field_name: String,
-    shared_secret: Option<String>,
+    _field_name: String, // kept for API compatibility; server always reads key "image"
 ) -> Result<(), String> {
-    use reqwest::multipart;
-    use reqwest::StatusCode;
     use std::path::Path;
     use std::time::Duration;
 
     let path = Path::new(&file_path);
-    let bytes = std::fs::read(path).map_err(|e| format!("read file: {e}"))?;
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("capture.jpg")
-        .to_string();
-
+    let file_bytes = std::fs::read(path).map_err(|e| format!("read file: {e}"))?;
     let mime = mime_for_capture_path(path);
 
+    eprintln!(
+        "[upload_capture_file] path={file_path:?} mime={mime} bytes={} url={url}",
+        file_bytes.len()
+    );
+
+    // Use multipart/form-data - more reliable for file uploads
+    let file_part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name(
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+        )
+        .mime_str(&mime)
+        .map_err(|e| e.to_string())?;
+
+    let form = reqwest::multipart::Form::new().part("image", file_part);
+
+    eprintln!("[upload_capture_file] Sending multipart form-data with field 'image'");
+
     let client = reqwest::Client::builder()
+        .use_native_tls()
+        // Try without forcing HTTP/1.1 to avoid UPLOAD_ERR_PARTIAL
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut attempted = vec![field_name.clone()];
-
-    let part = multipart::Part::bytes(bytes.clone())
-        .file_name(filename.clone())
-        .mime_str(mime)
+    let res = client
+        .post(&url)
+        .header("Accept", "application/json")
+        .multipart(form)
+        .send()
+        .await
         .map_err(|e| e.to_string())?;
-    let form = multipart::Form::new().part(field_name.clone(), part);
 
-    let mut req = client.post(&url).multipart(form);
-    if let Some(secret) = shared_secret.as_deref() {
-        let secret = secret.trim();
-        if !secret.is_empty() {
-            req = req.header("X-WEBRTC-SECRET", secret);
-        }
+    let status = res.status();
+    eprintln!("[upload_capture_file] status={status}");
+
+    if status.is_success() {
+        eprintln!("[upload_capture_file] SUCCESS — file uploaded ok");
+        return Ok(());
     }
 
-    let mut res = req.send().await.map_err(|e| e.to_string())?;
-
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        let is_missing_file = status == StatusCode::UNPROCESSABLE_ENTITY
-            && body.to_ascii_lowercase().contains("no_image_provided");
-
-        if is_missing_file {
-            let fallback = if field_name.eq_ignore_ascii_case("image") {
-                "file"
-            } else {
-                "image"
-            };
-            attempted.push(fallback.to_string());
-
-            let part = multipart::Part::bytes(bytes.clone())
-                .file_name(filename.clone())
-                .mime_str(mime)
-                .map_err(|e| e.to_string())?;
-            let form = multipart::Form::new().part(fallback.to_string(), part);
-
-            let mut req = client.post(&url).multipart(form);
-            if let Some(secret) = shared_secret.as_deref() {
-                let secret = secret.trim();
-                if !secret.is_empty() {
-                    req = req.header("X-WEBRTC-SECRET", secret);
-                }
-            }
-
-            res = req.send().await.map_err(|e| e.to_string())?;
-            if !res.status().is_success() {
-                let status = res.status();
-                let body = res.text().await.unwrap_or_default();
-                let snippet: String = body.chars().take(400).collect();
-                return Err(format!(
-                    "HTTP {} (fields tried: {}): {}",
-                    status,
-                    attempted.join(", "),
-                    snippet
-                ));
-            }
-        } else {
-            let snippet: String = body.chars().take(400).collect();
-            return Err(format!(
-                "HTTP {status} (field: {}): {snippet}",
-                attempted.join(", ")
-            ));
-        }
-    }
-
-    Ok(())
+    let status = res.status();
+    let body_txt = res.text().await.unwrap_or_default();
+    eprintln!("[upload_capture_file] error body={body_txt:?}");
+    Err(format!(
+        "HTTP {status}: {}",
+        &body_txt[..body_txt.len().min(400)]
+    ))
 }
 
 /// Wait until a file's size stops changing (i.e. OBS has finished flushing it).
@@ -389,7 +363,6 @@ pub async fn upload_video_chunked(
     file_path: String,
     url_chunk: String,
     url_assemble: String,
-    shared_secret: Option<String>,
 ) -> Result<serde_json::Value, String> {
     use reqwest::multipart;
     use std::path::Path;
@@ -453,15 +426,10 @@ pub async fn upload_video_chunked(
             .text("filename", filename.clone())
             .part("file", part);
 
-        let mut req = client.post(&url_chunk).multipart(form);
-        if let Some(s) = shared_secret.as_deref() {
-            let s = s.trim();
-            if !s.is_empty() {
-                req = req.header("X-WEBRTC-SECRET", s);
-            }
-        }
-
-        let res = req
+        let res = client
+            .post(&url_chunk)
+            .header("Accept", "application/json")
+            .multipart(form)
             .send()
             .await
             .map_err(|e| format!("chunk {chunk_index} send: {e}"))?;
@@ -480,21 +448,13 @@ pub async fn upload_video_chunked(
         .text("total_chunks", total_chunks.to_string())
         .text("filename", filename.clone());
 
-    let mut req = reqwest::Client::builder()
+    let res = reqwest::Client::builder()
         .timeout(Duration::from_secs(300)) // assembly can take a moment for big files
         .build()
         .map_err(|e| e.to_string())?
         .post(&url_assemble)
-        .multipart(form);
-
-    if let Some(s) = shared_secret.as_deref() {
-        let s = s.trim();
-        if !s.is_empty() {
-            req = req.header("X-WEBRTC-SECRET", s);
-        }
-    }
-
-    let res = req
+        .header("Accept", "application/json")
+        .multipart(form)
         .send()
         .await
         .map_err(|e| format!("assemble send: {e}"))?;
@@ -520,7 +480,6 @@ pub async fn upload_video_file(
     file_path: String,
     url: String,
     field_name: String,
-    shared_secret: Option<String>,
 ) -> Result<(), String> {
     use reqwest::multipart;
     use std::path::Path;
@@ -541,13 +500,18 @@ pub async fn upload_video_file(
 
     let mime = mime_for_video_path(path);
 
-    let bytes = tokio::fs::read(path)
+    let file_meta = tokio::fs::metadata(path)
         .await
-        .map_err(|e| format!("read file: {e}"))?;
+        .map_err(|e| format!("stat file: {e}"))?;
+    let file_size = file_meta.len();
+    let file_size_mb = file_size as f64 / 1_048_576.0;
 
-    let file_size_mb = bytes.len() as f64 / 1_048_576.0;
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("open file: {e}"))?;
+    let stream = tokio_util::io::ReaderStream::new(file);
 
-    let part = multipart::Part::bytes(bytes)
+    let part = multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), file_size)
         .file_name(filename.clone())
         .mime_str(mime)
         .map_err(|e| e.to_string())?;
@@ -559,15 +523,13 @@ pub async fn upload_video_file(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut req = client.post(&url).multipart(form);
-    if let Some(secret) = shared_secret.as_deref() {
-        let secret = secret.trim();
-        if !secret.is_empty() {
-            req = req.header("X-WEBRTC-SECRET", secret);
-        }
-    }
-
-    let res = req.send().await.map_err(|e| e.to_string())?;
+    let res = client
+        .post(&url)
+        .header("Accept", "application/json")
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
 
     if !res.status().is_success() {
         let status = res.status();
