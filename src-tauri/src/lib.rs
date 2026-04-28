@@ -30,6 +30,7 @@ pub fn run() {
             commands::wait_for_file_stable,
             commands::upload_video_file,
             commands::upload_video_chunked,
+            commands::upload_video_resumable,
             commands::list_printers,
             commands::print_file,
         ])

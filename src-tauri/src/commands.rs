@@ -185,7 +185,6 @@ pub async fn get_live_view_frame(state: State<'_, AppState>) -> Result<String, S
 // ── File system helpers ───────────────────────────────────────────────────────
 
 /// List image/video files in `folder`, sorted newest-first (by modified time).
-/// `extensions` is e.g. ["jpg","jpeg","png","mp4","mkv"]
 #[tauri::command]
 pub async fn list_folder_files(
     folder: String,
@@ -227,14 +226,12 @@ pub async fn list_folder_files(
     Ok(entries.into_iter().map(|(_, p)| p).collect())
 }
 
-/// POST the capture file to the Laravel `upload-capture` route as multipart form-data.
-/// POST a photo/capture file to the Laravel `upload-capture` route.
-/// Uses base64 JSON (primary) to avoid reverse proxy issues with multipart uploads.
+/// POST the capture file to the Laravel `upload-capture` route.
 #[tauri::command]
 pub async fn upload_capture_file(
     file_path: String,
     url: String,
-    _field_name: String, // kept for API compatibility; server always reads key "image"
+    _field_name: String,
 ) -> Result<(), String> {
     use std::path::Path;
     use std::time::Duration;
@@ -242,15 +239,6 @@ pub async fn upload_capture_file(
     let path = Path::new(&file_path);
     let file_bytes = std::fs::read(path).map_err(|e| format!("read file: {e}"))?;
     let mime = mime_for_capture_path(path);
-    let file_len = file_bytes.len();
-
-    eprintln!(
-        "[upload_capture_file] path={file_path:?} mime={mime} bytes={file_len} url={url}"
-    );
-
-    if file_len == 0 {
-        return Err("File is empty (0 bytes)".to_string());
-    }
 
     let client = reqwest::Client::builder()
         .use_native_tls()
@@ -258,19 +246,11 @@ pub async fn upload_capture_file(
         .build()
         .map_err(|e| e.to_string())?;
 
-    // Try base64 JSON (works better with production reverse proxies)
-    eprintln!("[upload_capture_file] Sending as base64 JSON");
-    
     let b64 = BASE64_STANDARD.encode(&file_bytes);
     let data_uri = format!("data:{mime};base64,{b64}");
-    eprintln!("[upload_capture_file] base64 encoded: original={} bytes, encoded={} chars, data_uri={} chars", 
-        file_bytes.len(), b64.len(), data_uri.len());
-    
+
     let json_body = serde_json::json!({ "image": data_uri });
-    let json_string = serde_json::to_string(&json_body).unwrap_or_default();
-    eprintln!("[upload_capture_file] JSON body size: {} bytes", json_string.len());
-    eprintln!("[upload_capture_file] JSON preview: {}", &json_string[..json_string.len().min(150)]);
-    
+
     let res = client
         .post(&url)
         .header("Accept", "application/json")
@@ -279,24 +259,19 @@ pub async fn upload_capture_file(
         .send()
         .await
         .map_err(|e| format!("send error: {e}"))?;
-    
-    eprintln!("[upload_capture_file] Response status: {}", res.status());
-    
+
     if res.status().is_success() {
-        eprintln!("[upload_capture_file] SUCCESS");
         Ok(())
     } else {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        eprintln!("[upload_capture_file] FAILED: HTTP {status}, body={body:?}");
-        Err(format!("HTTP {status}: {}", &body[..body.len().min(400)]))
+        Err(format!(
+            "HTTP {}: {}",
+            res.status(),
+            res.text().await.unwrap_or_default()
+        ))
     }
 }
 
-/// Wait until a file's size stops changing (i.e. OBS has finished flushing it).
-/// Polls every 500 ms; considers the file stable after `stable_checks` consecutive
-/// reads with the same size AND modified time. Times out after `timeout_secs`
-/// and returns an error to prevent uploading a partial/corrupted file.
+/// Wait until a file's size stops changing.
 #[tauri::command]
 pub async fn wait_for_file_stable(
     file_path: String,
@@ -344,14 +319,10 @@ pub async fn wait_for_file_stable(
         }
     }
 
-    Err(format!(
-        "file did not stabilize within {}s (last size: {})",
-        max_secs, prev_size
-    ))
+    Err(format!("file did not stabilize within {}s", max_secs))
 }
 
-/// Upload a video file in 5 MB chunks to avoid timeouts on large files.
-/// Calls `url_chunk` once per chunk, then `url_assemble` to stitch them on the server.
+/// Upload a video file in sequential 1MB chunks to avoid memory exhaustion and race conditions.
 #[tauri::command]
 pub async fn upload_video_chunked(
     file_path: String,
@@ -360,19 +331,108 @@ pub async fn upload_video_chunked(
 ) -> Result<serde_json::Value, String> {
     use reqwest::multipart;
     use std::path::Path;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use tokio::io::AsyncReadExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
-    const CHUNK_SIZE: usize = 5 * 1024 * 1024; // 5 MB per chunk
-
+    const CHUNK_SIZE: u64 = 1024 * 1024; // 1 MB
     let path = Path::new(&file_path);
+
+    let meta = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?;
+    let file_size = meta.len();
+    let total_chunks = (file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("video.mp4")
         .to_string();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let upload_id = format!("vid_{ts}");
 
-    // Sanitize filename: replace spaces and special chars with underscores for better compatibility
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Sequential Upload Loop
+    for chunk_index in 0..total_chunks {
+        file.seek(SeekFrom::Start(chunk_index * CHUNK_SIZE))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut buf = vec![0u8; CHUNK_SIZE as usize];
+        let n = file.read(&mut buf).await.map_err(|e| e.to_string())?;
+        buf.truncate(n);
+
+        let part = multipart::Part::bytes(buf)
+            .file_name("chunk.bin")
+            .mime_str("application/octet-stream")
+            .map_err(|e| e.to_string())?;
+
+        let form = multipart::Form::new()
+            .text("upload_id", upload_id.clone())
+            .text("chunk_index", chunk_index.to_string())
+            .text("total_chunks", total_chunks.to_string())
+            .text("filename", filename.clone())
+            .part("chunk_data", part);
+
+        let res = client
+            .post(&url_chunk)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !res.status().is_success() {
+            return Err(format!("Failed chunk {}: {}", chunk_index, res.status()));
+        }
+    }
+
+    // Assembly
+    let form = multipart::Form::new()
+        .text("upload_id", upload_id)
+        .text("total_chunks", total_chunks.to_string())
+        .text("filename", filename);
+
+    let res = client
+        .post(&url_assemble)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    res.json().await.map_err(|e| e.to_string())
+}
+
+/// Upload a video file using resumable chunks.
+#[tauri::command]
+pub async fn upload_video_resumable(
+    file_path: String,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    use reqwest::multipart;
+    use std::path::Path;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    const CHUNK_SIZE: usize = 1024 * 1024; // 1 MB
+
+    let path = Path::new(&file_path);
+    let file_size = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("metadata: {e}"))?
+        .len() as usize;
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("invalid filename")?;
     let filename_safe = filename
         .replace(' ', "_")
         .replace('(', "_")
@@ -380,119 +440,57 @@ pub async fn upload_video_chunked(
         .replace('[', "_")
         .replace(']', "_");
 
-    let file_size = tokio::fs::metadata(path)
-        .await
-        .map_err(|e| format!("stat: {e}"))?
-        .len() as usize;
+    let total_chunks = (file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    let upload_id = format!("{}-{}", file_size, filename_safe.replace('.', ""));
 
-    let total_chunks = (file_size + CHUNK_SIZE - 1).max(1) / CHUNK_SIZE;
-
-    // Unique upload ID: safe charset only (matches Laravel /^[a-zA-Z0-9_\-]+$/)
-    // Avoid deriving from filename because spaces/parentheses can break validation.
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let upload_id = format!("vid_{ts}");
-
-    // Client with per-chunk timeout (2 min is plenty for 5 MB)
     let client = reqwest::Client::builder()
-        .use_native_tls()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| e.to_string())?;
-
-    eprintln!("[upload_video_chunked] Starting chunked upload: file_size={file_size}, total_chunks={total_chunks}, upload_id={upload_id}");
-    if filename != filename_safe {
-        eprintln!("[upload_video_chunked] Sanitized filename: {filename} -> {filename_safe}");
-    }
-
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|e| format!("open: {e}"))?;
 
-    for chunk_index in 0..total_chunks {
+    for chunk_number in 1..=total_chunks {
         let mut buf = vec![0u8; CHUNK_SIZE];
         let n = file
             .read(&mut buf)
             .await
-            .map_err(|e| format!("read chunk {chunk_index}: {e}"))?;
+            .map_err(|e| format!("read chunk {chunk_number}: {e}"))?;
         buf.truncate(n);
         if n == 0 {
             break;
         }
 
-        eprintln!(
-            "[upload_video_chunked] chunk {chunk_index}/{total_chunks}: upload_id={upload_id}, filename={filename_safe}, size={n} bytes"
-        );
-
-        // Encode chunk as base64 to avoid multipart file upload issues on production servers
-        let chunk_base64 = BASE64_STANDARD.encode(&buf);
-        eprintln!("[upload_video_chunked] Encoded chunk to base64, length: {} bytes", chunk_base64.len());
-
-        let json_body = serde_json::json!({
-            "upload_id": upload_id,
-            "chunk_index": chunk_index,
-            "total_chunks": total_chunks,
-            "filename": filename_safe,
-            "chunk_data": chunk_base64,
-        });
-
-        eprintln!("[upload_video_chunked] POSTing JSON to {url_chunk}");
+        let part = multipart::Part::bytes(buf)
+            .file_name(filename_safe.clone())
+            .mime_str("application/octet-stream")
+            .map_err(|e| format!("mime: {e}"))?;
+        let form = multipart::Form::new()
+            .text("resumableChunkNumber", chunk_number.to_string())
+            .text("resumableChunkSize", CHUNK_SIZE.to_string())
+            .text("resumableCurrentChunkSize", n.to_string())
+            .text("resumableTotalSize", file_size.to_string())
+            .text("resumableTotalChunks", total_chunks.to_string())
+            .text("resumableIdentifier", upload_id.clone())
+            .text("resumableFilename", filename_safe.clone())
+            .text("resumableRelativePath", filename_safe.clone())
+            .part("file", part);
 
         let res = client
-            .post(&url_chunk)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .json(&json_body)
+            .post(&url)
+            .multipart(form)
             .send()
             .await
-            .map_err(|e| format!("chunk {chunk_index} send: {e}"))?;
-
+            .map_err(|e| format!("send: {e}"))?;
         if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.unwrap_or_default();
-            eprintln!("[upload_video_chunked] ERROR response: {body}");
-            let snippet: String = body.chars().take(300).collect();
-            return Err(format!("chunk {chunk_index} HTTP {status}: {snippet}"));
+            return Err(format!("chunk {} HTTP {}", chunk_number, res.status()));
         }
-
-        eprintln!("[upload_video_chunked] chunk {chunk_index} uploaded successfully");
     }
 
-    // Ask server to reassemble all chunks into a final file
-    let form = multipart::Form::new()
-        .text("upload_id", upload_id.clone())
-        .text("total_chunks", total_chunks.to_string())
-        .text("filename", filename_safe.clone());
-
-    let res = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300)) // assembly can take a moment for big files
-        .build()
-        .map_err(|e| e.to_string())?
-        .post(&url_assemble)
-        .header("Accept", "application/json")
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("assemble send: {e}"))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        let snippet: String = body.chars().take(300).collect();
-        return Err(format!("assemble HTTP {status}: {snippet}"));
-    }
-
-    let json: serde_json::Value = res
-        .json()
-        .await
-        .map_err(|e| format!("assemble parse: {e}"))?;
-    Ok(json)
+    Ok(serde_json::json!({"success": true, "chunks": total_chunks}))
 }
 
-/// POST a video file to the Laravel `upload-video` route as a streaming multipart upload.
-/// Uses streaming so large video files (100MB+) are not loaded fully into memory.
-/// `field_name` defaults to "file" if empty. Timeout is 30 minutes.
 #[tauri::command]
 pub async fn upload_video_file(
     file_path: String,
@@ -507,67 +505,36 @@ pub async fn upload_video_file(
     let field = if field_name.trim().is_empty() {
         "file".to_string()
     } else {
-        field_name.clone()
+        field_name
     };
-
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("video.mp4")
         .to_string();
-
     let mime = mime_for_video_path(path);
 
-    let file_meta = tokio::fs::metadata(path)
-        .await
-        .map_err(|e| format!("stat file: {e}"))?;
-    let file_size = file_meta.len();
-    let file_size_mb = file_size as f64 / 1_048_576.0;
-
-    eprintln!(
-        "[upload_video_file] path={file_path:?} filename={filename} field={field} mime={mime} size={file_size_mb:.2}MB url={url}"
-    );
-
-    // Read file into memory (simpler and more reliable than streaming for files < 100MB)
-    let file_bytes = tokio::fs::read(path)
-        .await
-        .map_err(|e| format!("read file: {e}"))?;
-
+    let file_bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
     let part = multipart::Part::bytes(file_bytes)
-        .file_name(filename.clone())
+        .file_name(filename)
         .mime_str(mime)
         .map_err(|e| e.to_string())?;
-
-    let form = multipart::Form::new().part(field.clone(), part);
-
-    eprintln!("[upload_video_file] Sending multipart form-data...");
+    let form = multipart::Form::new().part(field, part);
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(1800)) // 30 min for large videos
+        .timeout(Duration::from_secs(1800))
         .build()
         .map_err(|e| e.to_string())?;
-
     let res = client
         .post(&url)
-        .header("Accept", "application/json")
         .multipart(form)
         .send()
         .await
         .map_err(|e| e.to_string())?;
 
-    let status = res.status();
-    eprintln!("[upload_video_file] status={status}");
-
     if !res.status().is_success() {
-        let body = res.text().await.unwrap_or_default();
-        eprintln!("[upload_video_file] error body={body:?}");
-        let snippet: String = body.chars().take(400).collect();
-        return Err(format!(
-            "HTTP {status} (field: {field}, size: {file_size_mb:.1}MB): {snippet}"
-        ));
+        return Err(format!("HTTP {}", res.status()));
     }
-
-    eprintln!("[upload_video_file] SUCCESS — video uploaded ok");
     Ok(())
 }
 
@@ -583,7 +550,6 @@ fn mime_for_video_path(path: &std::path::Path) -> &'static str {
         Some("webm") => "video/webm",
         Some("mkv") => "video/x-matroska",
         Some("avi") => "video/x-msvideo",
-        Some("mts") | Some("m2ts") => "video/MP2T",
         _ => "application/octet-stream",
     }
 }
@@ -597,18 +563,10 @@ fn mime_for_capture_path(path: &std::path::Path) -> &'static str {
     {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        Some("gif") => "image/gif",
-        Some("tif") | Some("tiff") => "image/tiff",
-        Some("cr2") | Some("cr3") => "application/octet-stream",
-        Some("nef") | Some("arw") => "application/octet-stream",
         _ => "application/octet-stream",
     }
 }
 
-// ── Printer helpers ───────────────────────────────────────────────────────────
-
-/// List all installed printers on Windows via PowerShell.
 #[tauri::command]
 pub async fn list_printers() -> Result<Vec<String>, String> {
     use std::process::Command;
@@ -621,16 +579,13 @@ pub async fn list_printers() -> Result<Vec<String>, String> {
         .output()
         .map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let printers: Vec<String> = stdout
+    Ok(stdout
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
-        .collect();
-    Ok(printers)
+        .collect())
 }
 
-/// Print an image file directly to the named printer (Windows only).
-/// Uses mspaint /pt which bypasses the print dialog.
 #[tauri::command]
 pub async fn print_file(path: String, printer: String) -> Result<(), String> {
     use std::process::Command;
