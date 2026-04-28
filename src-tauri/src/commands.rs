@@ -296,6 +296,185 @@ pub async fn read_file_chunk_bytes(
     Ok(tauri::ipc::Response::new(buf))
 }
 
+// ---------------------------------------------------------------------------
+// Native parallel chunked upload — sends raw bytes directly from Rust.
+// Eliminates the base64 IPC round-trip that the browser-fetch approach needs.
+// Metadata travels in URL query params (parsed by Apache before touching the
+// body), body is application/octet-stream with a known Content-Length, which
+// reqwest streams immediately — satisfying mod_reqtimeout's minrate check.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+struct UploadProgress {
+    done: u64,
+    total: u64,
+}
+
+/// Upload a video file in parallel binary chunks directly from Rust.
+/// Emits "upload-progress" events so the frontend can show progress.
+#[tauri::command]
+pub async fn upload_video_chunked_native(
+    app: tauri::AppHandle,
+    file_path: String,
+    file_size: u64,
+    url_chunk: String,
+    url_assemble: String,
+) -> Result<serde_json::Value, String> {
+    use std::path::Path;
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    };
+    use tauri::Emitter;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+    use tokio::sync::Semaphore;
+    use tokio::task::JoinSet;
+
+    const CHUNK_SIZE: u64 = 8 * 1024 * 1024; // 8 MB
+    const CONCURRENCY: usize = 5;
+
+    let path = Path::new(&file_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("video.mp4")
+        .to_string();
+
+    let total_chunks = file_size.div_ceil(CHUNK_SIZE);
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let upload_id = format!("vid_{ts}");
+
+    let client = Arc::new(
+        reqwest::Client::builder()
+            .use_native_tls()
+            .timeout(std::time::Duration::from_secs(600))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| e.to_string())?,
+    );
+
+    let semaphore = Arc::new(Semaphore::new(CONCURRENCY));
+    let done_count = Arc::new(AtomicU64::new(0));
+    let mut join_set: JoinSet<Result<(), String>> = JoinSet::new();
+
+    for chunk_index in 0..total_chunks {
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let client = client.clone();
+        let file_path = file_path.clone();
+        let url_chunk = url_chunk.clone();
+        let upload_id = upload_id.clone();
+        let filename = filename.clone();
+        let done_count = done_count.clone();
+        let app = app.clone();
+
+        join_set.spawn(async move {
+            let _permit = permit; // dropped when task completes, releasing the semaphore slot
+
+            let offset = chunk_index * CHUNK_SIZE;
+            let length = CHUNK_SIZE.min(file_size - offset);
+
+            // Read chunk with fill-loop so we always get exactly `length` bytes
+            let mut file = tokio::fs::File::open(&file_path)
+                .await
+                .map_err(|e| format!("open: {e}"))?;
+            file.seek(SeekFrom::Start(offset))
+                .await
+                .map_err(|e| format!("seek: {e}"))?;
+
+            let mut buf = vec![0u8; length as usize];
+            let mut total_read = 0usize;
+            while total_read < length as usize {
+                let n = file
+                    .read(&mut buf[total_read..])
+                    .await
+                    .map_err(|e| format!("read: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                total_read += n;
+            }
+            buf.truncate(total_read);
+
+            let actual_len = buf.len() as u64;
+            let params = [
+                ("upload_id", upload_id.as_str()),
+                ("chunk_index", &chunk_index.to_string()),
+                ("total_chunks", &total_chunks.to_string()),
+                ("filename", filename.as_str()),
+            ];
+            let url =
+                reqwest::Url::parse_with_params(&url_chunk, &params).map_err(|e| e.to_string())?;
+
+            let res = client
+                .post(url)
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Length", actual_len.to_string())
+                .header("Accept", "application/json")
+                .body(buf)
+                .send()
+                .await
+                .map_err(|e| format!("send chunk {chunk_index}: {e}"))?;
+
+            if !res.status().is_success() {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                return Err(format!("chunk {chunk_index} failed: {status} — {body}"));
+            }
+
+            let done = done_count.fetch_add(1, Ordering::Relaxed) + 1;
+            let _ = app.emit(
+                "upload-progress",
+                UploadProgress {
+                    done,
+                    total: total_chunks,
+                },
+            );
+
+            Ok(())
+        });
+    }
+
+    // Await all tasks; surface the first error
+    while let Some(result) = join_set.join_next().await {
+        result.map_err(|e| format!("task panic: {e}"))??;
+    }
+
+    // All chunks stored — trigger server-side assembly
+    let assemble_body = serde_json::json!({
+        "upload_id":    upload_id,
+        "total_chunks": total_chunks,
+        "filename":     filename,
+    });
+
+    let assemble_res = client
+        .post(&url_assemble)
+        .header("Accept", "application/json")
+        .json(&assemble_body)
+        .send()
+        .await
+        .map_err(|e| format!("assemble send: {e}"))?;
+
+    if !assemble_res.status().is_success() {
+        let status = assemble_res.status();
+        let body = assemble_res.text().await.unwrap_or_default();
+        return Err(format!("assemble failed: {status} — {body}"));
+    }
+
+    assemble_res
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// POST the capture file to the Laravel `upload-capture` route.
 #[tauri::command]
 pub async fn upload_capture_file(
