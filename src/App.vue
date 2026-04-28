@@ -207,11 +207,11 @@ function onRecordSaved(path) {
     invoke('wait_for_file_stable', { filePath: path, timeoutSecs: 30, stableChecks: 3 })
       .then(() => {
         addToast(`⏫ Uploading: ${name}`)
-        console.log('[video upload] path:', path, '| url:', remoteSite.uploadVideo)
-        return invoke('upload_video_file', {
+        console.log('[video upload] using chunked upload for:', path)
+        return invoke('upload_video_chunked', {
           filePath: path,
-          url: remoteSite.uploadVideo,
-          fieldName: 'video',
+          urlChunk: remoteSite.uploadVideoChunk,
+          urlAssemble: remoteSite.uploadVideoAssemble,
         })
       })
       .then(() => addToast('☁️ Video uploaded!'))
