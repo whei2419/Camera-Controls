@@ -18,6 +18,9 @@ const emit = defineEmits(['close', 'obs-connected', 'obs-disconnected', 'camera-
 
 const tab = ref('obs') // 'obs' | 'files' | 'printer' | 'camera' | 'server'
 
+const RECORD_MEDIA_SOURCE_KEY = 'setting_record_media_source'
+const recordMediaSource = ref(localStorage.getItem(RECORD_MEDIA_SOURCE_KEY) || '')
+
 const serverUrl = ref('')
 const serverUrlMsg = ref('')
 const RECORDING_DURATION_KEY = 'setting_recording_duration_sec'
@@ -103,6 +106,14 @@ function onOBSDisconnected() {
 function onCameraConnected(info) {
   emit('camera-connected', info)
 }
+
+const recordMediaSourceMsg = ref('')
+
+function applyMediaSource() {
+  localStorage.setItem(RECORD_MEDIA_SOURCE_KEY, recordMediaSource.value.trim())
+  recordMediaSourceMsg.value = 'Saved ✓'
+  setTimeout(() => { recordMediaSourceMsg.value = '' }, 2000)
+}
 </script>
 
 <template>
@@ -142,6 +153,17 @@ function onCameraConnected(info) {
             <!-- OBS Connection -->
             <div v-if="tab === 'obs'" class="sm-section">
               <OBSConnect @connected="onOBSConnected" @disconnected="onOBSDisconnected" />
+              <div class="obs-extra">
+                <label class="field-label">Play media source on record start</label>
+                <p class="field-hint">Exact name of an OBS media/audio source to play when recording begins. Leave blank
+                  to disable.</p>
+                <div class="duration-row">
+                  <input v-model="recordMediaSource" class="field-input" placeholder="e.g. Intro Music"
+                    spellcheck="false" @keydown.enter="applyMediaSource" />
+                  <button class="save-btn" @click="applyMediaSource">Apply</button>
+                </div>
+                <span v-if="recordMediaSourceMsg" class="save-msg">{{ recordMediaSourceMsg }}</span>
+              </div>
             </div>
 
             <!-- File Paths -->
@@ -357,6 +379,14 @@ function onCameraConnected(info) {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.obs-extra {
+  max-width: 480px;
+  margin: 1.25rem auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
 
 .field-label {

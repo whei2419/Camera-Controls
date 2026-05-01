@@ -141,14 +141,9 @@ async function captureFrame() {
       try {
         await captureViaOBS(captureStartMs)
       } catch (obsErr) {
-        // Only fall back to DigiCamControl when OBS itself is not connected.
-        // Screenshot errors (bad path, missing folder) should surface directly.
-        const isConnErr = obsErr?.message === 'OBS is not connected'
-        if (isConnErr && props.connected) {
-          await captureViaDigicam(captureStartMs)
-        } else {
-          throw obsErr
-        }
+        // Screenshot errors (bad path, missing folder) surface directly.
+        // OBS connection errors also surface — no fallback when source is set to OBS.
+        throw obsErr
       }
     } else {
       if (!props.connected) throw new Error('Camera is not connected')
@@ -237,6 +232,18 @@ async function startRecording() {
   if (!props.obsInstance) return
   error.value = ''
   try { await props.obsInstance.call('StartRecord') } catch (e) { error.value = String(e) }
+
+  const mediaSourceName = localStorage.getItem('setting_record_media_source')?.trim()
+  if (mediaSourceName) {
+    try {
+      await props.obsInstance.call('TriggerMediaInputAction', {
+        inputName: mediaSourceName,
+        mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
+      })
+    } catch (e) {
+      console.warn('[recording] TriggerMediaInputAction failed:', e)
+    }
+  }
 }
 
 async function stopRecording() {

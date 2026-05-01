@@ -38,31 +38,40 @@ async function connect() {
     status.value = 'connecting'
     error.value = ''
     saveCreds()
+    const attempt = new OBSWebSocket()
+    obs = attempt
     try {
-        obs = new OBSWebSocket()
-
-        obs.on('ConnectionClosed', () => {
+        attempt.on('ConnectionClosed', () => {
+            if (obs !== attempt) return
             status.value = 'disconnected'
             obsInfo.value = null
             emit('disconnected')
         })
 
-        obs.on('ConnectionError', () => {
+        attempt.on('ConnectionError', () => {
+            if (obs !== attempt) return
             status.value = 'error'
             obsInfo.value = null
             emit('disconnected')
         })
 
-        const { obsWebSocketVersion } = await obs.connect(
+        const { obsWebSocketVersion } = await attempt.connect(
             `ws://${host.value}:${port.value}`,
             password.value || undefined
         )
 
-        const { currentProgramSceneName } = await obs.call('GetCurrentProgramScene')
-        obsInfo.value = { version: obsWebSocketVersion, scene: currentProgramSceneName, obs }
+        // Cancelled while connecting — drop the newly-established connection
+        if (obs !== attempt) {
+            attempt.disconnect()
+            return
+        }
+
+        const { currentProgramSceneName } = await attempt.call('GetCurrentProgramScene')
+        obsInfo.value = { version: obsWebSocketVersion, scene: currentProgramSceneName, obs: attempt }
         status.value = 'connected'
         emit('connected', obsInfo.value)
     } catch (e) {
+        if (obs !== attempt) return
         error.value = String(e)
         status.value = 'error'
         obs = null
@@ -77,6 +86,17 @@ async function disconnect() {
     status.value = 'disconnected'
     obsInfo.value = null
     emit('disconnected')
+}
+
+function cancelConnect() {
+    if (obs) {
+        obs.off('ConnectionClosed')
+        obs.off('ConnectionError')
+        obs.disconnect()
+        obs = null
+    }
+    status.value = 'disconnected'
+    error.value = ''
 }
 
 onUnmounted(() => { if (obs) obs.disconnect() })
@@ -112,20 +132,21 @@ onMounted(() => {
         <div v-else class="obs-form">
             <div class="field-row">
                 <label>Host</label>
-                <input v-model="host" class="field-input" placeholder="localhost" :disabled="status === 'connecting'" />
+                <input v-model="host" class="field-input" placeholder="localhost" />
             </div>
             <div class="field-row">
                 <label>Port</label>
-                <input v-model.number="port" class="field-input" type="number" placeholder="4455"
-                    :disabled="status === 'connecting'" />
+                <input v-model.number="port" class="field-input" type="number" placeholder="4455" />
             </div>
             <div class="field-row">
                 <label>Password</label>
-                <input v-model="password" class="field-input" type="password" placeholder="(optional)"
-                    :disabled="status === 'connecting'" />
+                <input v-model="password" class="field-input" type="password" placeholder="(optional)" />
             </div>
-            <button class="btn btn-primary btn-full mt" :disabled="status === 'connecting'" @click="connect">
-                {{ status === 'connecting' ? 'Connecting…' : 'Connect to OBS' }}
+            <button v-if="status === 'connecting'" class="btn btn-ghost btn-full mt" @click="cancelConnect">
+                Cancel
+            </button>
+            <button v-else class="btn btn-primary btn-full mt" @click="connect">
+                Connect to OBS
             </button>
         </div>
 
