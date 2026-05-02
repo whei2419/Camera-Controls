@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import GalleryScreen from './components/GalleryScreen.vue'
 import LiveView from './components/LiveView.vue'
@@ -71,6 +71,117 @@ function clearGallery() {
 
 // ── Settings modal ────────────────────────────────────────────────
 const showSettingsModal = ref(false)
+const obsConnectRef = ref(null)
+const cameraConnectRef = ref(null)
+
+function openSettings() {
+  showSettingsModal.value = true
+}
+
+// ── Startup connection check modal ────────────────────────────────
+const showStartupCheck = ref(false)
+const startupStatus = ref('checking') // 'checking' | 'done'
+const startupObs = ref('pending')     // 'pending' | 'ok' | 'fail'
+const startupCam = ref('pending')     // 'pending' | 'ok' | 'fail'
+const startupFeed = ref('pending')    // 'pending' | 'ok' | 'fail'
+
+async function runStartupCheck() {
+  // Read saved settings to know what to check
+  let obsCreds = null
+  try { obsCreds = JSON.parse(localStorage.getItem('obs_creds') || 'null') } catch { }
+  const obsConfigured = !!(obsCreds?.host)
+
+  const captureSource = (localStorage.getItem('setting_photo_capture_source') || 'digicamcontrol').toLowerCase()
+  const camConfigured = captureSource !== 'obs'
+
+  // Nothing configured at all — skip the modal entirely
+  if (!obsConfigured && !camConfigured) return
+
+  // Post-OBS-reload: OBS will auto-connect on its own, no need for the startup modal again.
+  // We use a timestamp in localStorage — only skip if the reload happened within the last 10s.
+  const reloadTs = parseInt(localStorage.getItem('_obs_reload_ts') || '0', 10)
+  localStorage.removeItem('_obs_reload_ts') // always clear immediately
+  if (Date.now() - reloadTs < 10000) return
+
+  showStartupCheck.value = true
+  startupStatus.value = 'checking'
+  startupObs.value = obsConfigured ? 'pending' : 'skip'
+  startupCam.value = camConfigured ? 'pending' : 'skip'
+  startupFeed.value = 'pending'
+
+  const checks = []
+
+  if (obsConfigured) {
+    checks.push((async () => {
+      try {
+        await Promise.race([
+          new Promise((resolve) => {
+            const stop = watch(obsConnected, val => {
+              if (val) { stop(); resolve() }
+            }, { immediate: true })
+            if (!obsConnected.value && obsConnectRef.value) {
+              obsConnectRef.value.reconnect().catch(() => { })
+            }
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+        ])
+        startupObs.value = 'ok'
+        // Reload so the browser re-enumerates devices with labels now that OBS is connected.
+        // This guarantees the OBS Virtual Camera is selected correctly on first run.
+        localStorage.setItem('_obs_reload_ts', String(Date.now()))
+        window.location.reload()
+      } catch {
+        startupObs.value = 'fail'
+      }
+    })())
+  }
+
+  if (camConfigured) {
+    checks.push((async () => {
+      try {
+        await Promise.race([
+          new Promise((resolve) => {
+            const stop = watch(connected, val => {
+              if (val) { stop(); resolve() }
+            }, { immediate: true })
+            if (!connected.value && cameraConnectRef.value) {
+              cameraConnectRef.value.reconnect().catch(() => { })
+            }
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+        ])
+        startupCam.value = 'ok'
+      } catch {
+        startupCam.value = 'fail'
+      }
+    })())
+  }
+
+  // Feed check runs in parallel — LiveView auto-starts when OBS connects,
+  // so we just watch for active with a 10s window to cover OBS connect time + feed start time.
+  checks.push((async () => {
+    try {
+      await Promise.race([
+        new Promise((resolve) => {
+          const stop = watch(() => liveViewRef.value?.active, val => {
+            if (val) { stop(); resolve() }
+          }, { immediate: true })
+          // Only call startFeed directly if OBS is not configured (no virtual cam expected)
+          if (!obsConfigured && !liveViewRef.value?.active && liveViewRef.value?.startFeed) {
+            liveViewRef.value.startFeed().catch(() => { })
+          }
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+      ])
+      startupFeed.value = 'ok'
+    } catch {
+      startupFeed.value = 'fail'
+    }
+  })())
+
+  await Promise.all(checks)
+  startupStatus.value = 'done'
+}
 
 // ── Thumbnail refresh ─────────────────────────────────────────────
 const thumbnailRefreshTrigger = ref(0)
@@ -230,6 +341,7 @@ function onRecordSaved(path) {
 
 onMounted(loadGallery)
 onMounted(loadRecordingDurationConfig)
+onMounted(runStartupCheck)
 // Initialize Pusher client (listen for remote triggers)
 onMounted(() => {
   try {
@@ -299,7 +411,8 @@ onMounted(() => {
       onFeedToggle: async (payload) => {
         // payload { action: 'on'|'off' } optional
         if (liveViewRef.value?.toggle) liveViewRef.value.toggle()
-      }
+      },
+      onReload: () => reloadApp()
     })
   } catch (e) { console.warn('Pusher init failed', e) }
 })
@@ -340,7 +453,7 @@ function reloadApp() {
           {{ cameraInfo.name }}
           <button class="btn btn-ghost btn-xs" @click="disconnect">Disconnect</button>
         </div>
-        <button class="btn btn-ghost btn-xs settings-btn" @click="showSettingsModal = true">
+        <button class="btn btn-ghost btn-xs settings-btn" @click="openSettings">
           <Icon icon="heroicons:cog-6-tooth" width="14" height="14" style="vertical-align:middle;margin-right:4px" />
           Settings
         </button>
@@ -363,11 +476,11 @@ function reloadApp() {
 
       <!-- Keep OBS connect mounted (hidden) so app stays connected to OBS even when settings modal is closed -->
       <div style="display:none">
-        <OBSConnect @connected="onOBSConnected" @disconnected="onOBSDisconnected" />
+        <OBSConnect ref="obsConnectRef" @connected="onOBSConnected" @disconnected="onOBSDisconnected" />
       </div>
       <!-- Keep Camera connect mounted (hidden) so app can ping & detect DigiCamControl on startup -->
       <div style="display:none">
-        <CameraConnect @connected="onConnected" />
+        <CameraConnect ref="cameraConnectRef" @connected="onConnected" />
       </div>
 
       <!-- Main area: live view only -->
@@ -389,7 +502,57 @@ function reloadApp() {
       </div>
     </transition-group>
   </div>
+  <!-- ── Startup Connection Check Modal ───────────────────────── -->
+  <teleport to="body">
+    <transition name="sc-fade">
+      <div v-if="showStartupCheck" class="sc-overlay">
+        <div class="sc-modal">
+          <h2 class="sc-title">Starting up…</h2>
+          <p class="sc-subtitle">Checking connections</p>
 
+          <div class="sc-checks">
+            <div v-if="startupObs !== 'skip'" class="sc-row">
+              <span class="sc-label">OBS WebSocket</span>
+              <span class="sc-badge" :class="startupObs">
+                <span v-if="startupObs === 'pending'">connecting…</span>
+                <span v-else-if="startupObs === 'ok'">connected ✓</span>
+                <span v-else>not found</span>
+              </span>
+            </div>
+            <div v-if="startupCam !== 'skip'" class="sc-row">
+              <span class="sc-label">DigiCamControl</span>
+              <span class="sc-badge" :class="startupCam">
+                <span v-if="startupCam === 'pending'">connecting…</span>
+                <span v-else-if="startupCam === 'ok'">connected ✓</span>
+                <span v-else>not found</span>
+              </span>
+            </div>
+            <div class="sc-row">
+              <span class="sc-label">Live feed</span>
+              <span class="sc-badge" :class="startupFeed">
+                <span v-if="startupFeed === 'pending'">starting…</span>
+                <span v-else-if="startupFeed === 'ok'">active ✓</span>
+                <span v-else>no camera found</span>
+              </span>
+            </div>
+          </div>
+
+          <div v-if="startupStatus === 'done'" class="sc-actions">
+            <p v-if="startupObs === 'fail' || startupCam === 'fail' || startupFeed === 'fail'" class="sc-hint">
+              Some connections failed. Open Settings to fix credentials and reconnect.
+            </p>
+            <div class="sc-buttons">
+              <button v-if="startupObs === 'fail' || startupCam === 'fail' || startupFeed === 'fail'"
+                class="btn btn-primary btn-sm" @click="showStartupCheck = false; openSettings()">
+                Open Settings
+              </button>
+              <button class="btn btn-ghost btn-sm" @click="showStartupCheck = false">Continue</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+  </teleport>
   <!-- ── Settings Modal ───────────────────────────────────────── -->
   <SettingsModal :show="showSettingsModal" :obs-connected="obsConnected" :obs-info="obsInfo" :connected="connected"
     :obs-instance="obsInfo?.obs ?? null" @close="showSettingsModal = false; refreshThumbnails()"
@@ -524,6 +687,12 @@ body {
   box-shadow: 0 0 6px #a78bfa88;
 }
 
+.dot-checking {
+  background: #eab308;
+  box-shadow: 0 0 6px #eab30888;
+  animation: blink 0.8s infinite;
+}
+
 .dot-push {
   background: #60a5fa;
   box-shadow: 0 0 6px #60a5fa88;
@@ -630,6 +799,123 @@ body {
   border-color: var(--c-border);
   color: var(--c-text);
   padding: 0.25rem 0.75rem;
+}
+
+/* ── Startup check modal ────────────────────────────────────────────────── */
+.sc-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+}
+
+.sc-modal {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  padding: 2rem 2.5rem;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.sc-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--c-text);
+}
+
+.sc-subtitle {
+  margin: -0.75rem 0 0;
+  font-size: 0.82rem;
+  color: var(--c-text-muted);
+}
+
+.sc-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+
+.sc-label {
+  color: var(--c-text-muted);
+}
+
+.sc-badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--c-surface-2);
+  color: var(--c-text-muted);
+}
+
+.sc-badge.pending {
+  color: #eab308;
+  animation: sc-blink 0.8s infinite;
+}
+
+.sc-badge.ok {
+  background: #14532d55;
+  color: #4ade80;
+}
+
+.sc-badge.fail {
+  background: #7f1d1d55;
+  color: var(--c-error);
+}
+
+.sc-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--c-text-muted);
+  line-height: 1.5;
+}
+
+.sc-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.sc-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.sc-fade-enter-active,
+.sc-fade-leave-active {
+  transition: opacity 0.25s;
+}
+
+.sc-fade-enter-from,
+.sc-fade-leave-to {
+  opacity: 0;
+}
+
+@keyframes sc-blink {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
 }
 
 /* ── Toast ──────────────────────────────────────────────────────────────── */

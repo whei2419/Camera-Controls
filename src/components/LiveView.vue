@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
+import { broadcastEvent } from '../lib/pusherClient'
 
 const DC = 'http://localhost:5513'
 
@@ -42,21 +43,33 @@ function applyDeviceList(devices) {
 async function startFeed() {
   error.value = ''
   try {
+    // Start with whatever device is currently selected (labels may be empty on first run)
     stream = await navigator.mediaDevices.getUserMedia({
       video: selectedDevice.value
         ? { deviceId: { exact: selectedDevice.value } }
         : true,
       audio: false
     })
+
+    // Re-enumerate now that we have permission — labels will be populated
+    const prevDevice = selectedDevice.value
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    applyDeviceList(devices)
+
+    // If a better device was found (e.g. OBS Virtual Camera), restart with it
+    if (selectedDevice.value && selectedDevice.value !== prevDevice) {
+      stream.getTracks().forEach(t => t.stop())
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: selectedDevice.value } },
+        audio: false
+      })
+    }
+
     if (videoRef.value) {
       videoRef.value.srcObject = stream
       await videoRef.value.play()
     }
     active.value = true
-
-    // Re-enumerate now that we have permission — labels will be populated
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    applyDeviceList(devices)
   } catch (e) {
     console.error('startFeed error', e)
     error.value = String(e)
@@ -138,13 +151,7 @@ async function captureFrame() {
 
     const source = getPhotoCaptureSource()
     if (source === 'obs') {
-      try {
-        await captureViaOBS(captureStartMs)
-      } catch (obsErr) {
-        // Screenshot errors (bad path, missing folder) surface directly.
-        // OBS connection errors also surface — no fallback when source is set to OBS.
-        throw obsErr
-      }
+      await captureViaOBS(captureStartMs)
     } else {
       if (!props.connected) throw new Error('Camera is not connected')
       await captureViaDigicam(captureStartMs)
@@ -232,6 +239,7 @@ async function startRecording() {
   if (!props.obsInstance) return
   error.value = ''
   try { await props.obsInstance.call('StartRecord') } catch (e) { error.value = String(e) }
+  broadcastEvent('recording_started')
 
   const mediaSourceName = localStorage.getItem('setting_record_media_source')?.trim()
   if (mediaSourceName) {
@@ -249,6 +257,7 @@ async function startRecording() {
 async function stopRecording() {
   if (!props.obsInstance) return
   try { await props.obsInstance.call('StopRecord') } catch (e) { error.value = String(e) }
+  broadcastEvent('recording_stopped')
 }
 
 function formatTime(s) {
@@ -275,7 +284,9 @@ defineExpose({
   captureFrame,
   startRecording,
   stopRecording,
-  toggle
+  toggle,
+  startFeed,
+  active,
 })
 </script>
 

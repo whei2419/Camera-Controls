@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, onUnmounted, onMounted } from 'vue'
 import OBSWebSocket from 'obs-websocket-js'
+import { broadcastEvent } from '../lib/pusherClient'
 
 const STORAGE_KEY = 'obs_creds'
 
@@ -46,6 +47,7 @@ async function connect() {
             status.value = 'disconnected'
             obsInfo.value = null
             emit('disconnected')
+            broadcastEvent('obs_disconnected')
         })
 
         attempt.on('ConnectionError', () => {
@@ -70,6 +72,7 @@ async function connect() {
         obsInfo.value = { version: obsWebSocketVersion, scene: currentProgramSceneName, obs: attempt }
         status.value = 'connected'
         emit('connected', obsInfo.value)
+        broadcastEvent('obs_connected', { version: obsWebSocketVersion, scene: currentProgramSceneName })
     } catch (e) {
         if (obs !== attempt) return
         error.value = String(e)
@@ -108,6 +111,8 @@ onMounted(() => {
         connect().catch(() => { /* swallow - UI will show error */ })
     }
 })
+
+defineExpose({ reconnect: connect })
 </script>
 
 <template>

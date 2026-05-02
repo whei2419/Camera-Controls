@@ -37,6 +37,8 @@ onMounted(() => {
     connect().catch(() => { })
   }
 })
+
+defineExpose({ reconnect: connect })
 </script>
 
 <template>
