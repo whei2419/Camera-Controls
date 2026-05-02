@@ -70,6 +70,7 @@ async function startFeed() {
       await videoRef.value.play()
     }
     active.value = true
+    broadcastEvent('feed_started', { device: videoDevices.value.find(d => d.deviceId === selectedDevice.value)?.label ?? '' })
   } catch (e) {
     console.error('startFeed error', e)
     error.value = String(e)
@@ -85,6 +86,7 @@ function stopFeed() {
     videoRef.value.srcObject = null
   }
   active.value = false
+  broadcastEvent('feed_stopped')
 }
 
 async function toggle() {

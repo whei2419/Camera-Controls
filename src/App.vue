@@ -7,7 +7,7 @@ import SettingsModal from './components/SettingsModal.vue'
 import ThumbnailGallery from './components/ThumbnailGallery.vue'
 import OBSConnect from './components/OBSConnect.vue'
 import CameraConnect from './components/CameraConnect.vue'
-import { initPusher, disconnectPusher } from './lib/pusherClient'
+import { initPusher, disconnectPusher, broadcastEvent } from './lib/pusherClient'
 import { remoteSite, uploadCaptureFormField } from './config/remoteSite.js'
 import { uploadVideoChunked } from './lib/videoChunkUpload.js'
 
@@ -18,11 +18,13 @@ const cameraInfo = ref(null)
 async function onConnected(info) {
   cameraInfo.value = info
   connected.value = true
+  broadcastEvent('camera_connected', { name: info?.name ?? '' })
 }
 
 async function disconnect() {
   connected.value = false
   cameraInfo.value = null
+  broadcastEvent('camera_disconnected')
 }
 
 // ── OBS WebSocket (live feed) ──
@@ -342,6 +344,11 @@ function onRecordSaved(path) {
 onMounted(loadGallery)
 onMounted(loadRecordingDurationConfig)
 onMounted(runStartupCheck)
+onMounted(() => {
+  // Broadcast current camera/OBS state so monitoring page gets live status on load
+  if (connected.value) broadcastEvent('camera_connected', { name: cameraInfo.value?.name ?? '' })
+  if (obsConnected.value) broadcastEvent('obs_connected', { scene: obsInfo.value?.scene ?? '' })
+})
 // Initialize Pusher client (listen for remote triggers)
 onMounted(() => {
   try {
@@ -412,7 +419,15 @@ onMounted(() => {
         // payload { action: 'on'|'off' } optional
         if (liveViewRef.value?.toggle) liveViewRef.value.toggle()
       },
-      onReload: () => reloadApp()
+      onReload: () => reloadApp(),
+      onRequestState: () => {
+        if (connected.value) broadcastEvent('camera_connected', { name: cameraInfo.value?.name ?? '' })
+        else broadcastEvent('camera_disconnected')
+        if (obsConnected.value) broadcastEvent('obs_connected', { scene: obsInfo.value?.scene ?? '' })
+        else broadcastEvent('obs_disconnected')
+        if (liveViewRef.value?.active) broadcastEvent('feed_started', { device: '' })
+        else broadcastEvent('feed_stopped')
+      }
     })
   } catch (e) { console.warn('Pusher init failed', e) }
 })
