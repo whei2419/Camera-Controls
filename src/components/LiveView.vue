@@ -250,9 +250,13 @@ async function startRecording() {
         inputName: mediaSourceName,
         mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
       })
+      broadcastEvent('audio_source_ok', { source: mediaSourceName })
     } catch (e) {
       console.warn('[recording] TriggerMediaInputAction failed:', e)
+      broadcastEvent('audio_source_fail', { source: mediaSourceName, error: String(e) })
     }
+  } else {
+    broadcastEvent('audio_source_none')
   }
 }
 

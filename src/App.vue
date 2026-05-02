@@ -448,6 +448,9 @@ onMounted(() => {
         else broadcastEvent('obs_disconnected')
         if (liveViewRef.value?.active) broadcastEvent('feed_started', { device: '' })
         else broadcastEvent('feed_stopped')
+        // Audio source config
+        const mediaSource = localStorage.getItem('setting_record_media_source')?.trim() || ''
+        broadcastEvent('audio_configured', { source: mediaSource })
       }
     })
   } catch (e) { console.warn('Pusher init failed', e) }
