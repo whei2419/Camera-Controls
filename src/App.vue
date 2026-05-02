@@ -15,16 +15,20 @@ import { uploadVideoChunked } from './lib/videoChunkUpload.js'
 const connected = ref(false)
 const cameraInfo = ref(null)
 
+function getCaptureSource() {
+  return (localStorage.getItem('setting_photo_capture_source') || 'digicamcontrol').toLowerCase()
+}
+
 async function onConnected(info) {
   cameraInfo.value = info
   connected.value = true
-  broadcastEvent('camera_connected', { name: info?.name ?? '' })
+  broadcastEvent('camera_connected', { name: info?.name ?? '', source: getCaptureSource() })
 }
 
 async function disconnect() {
   connected.value = false
   cameraInfo.value = null
-  broadcastEvent('camera_disconnected')
+  broadcastEvent('camera_disconnected', { source: getCaptureSource() })
 }
 
 // ── OBS WebSocket (live feed) ──
@@ -34,11 +38,17 @@ const obsInfo = ref(null)
 function onOBSConnected(info) {
   obsInfo.value = info
   obsConnected.value = true
+  if (getCaptureSource() === 'obs') {
+    broadcastEvent('camera_connected', { name: info?.scene ?? 'OBS Virtual Camera', source: 'obs' })
+  }
 }
 
 function onOBSDisconnected() {
   obsConnected.value = false
   obsInfo.value = null
+  if (getCaptureSource() === 'obs') {
+    broadcastEvent('camera_disconnected', { source: 'obs' })
+  }
 }
 
 // No cleanup needed — DigiCamControl manages the camera connection
@@ -346,7 +356,12 @@ onMounted(loadRecordingDurationConfig)
 onMounted(runStartupCheck)
 onMounted(() => {
   // Broadcast current camera/OBS state so monitoring page gets live status on load
-  if (connected.value) broadcastEvent('camera_connected', { name: cameraInfo.value?.name ?? '' })
+  const src = getCaptureSource()
+  if (src === 'obs') {
+    if (obsConnected.value) broadcastEvent('camera_connected', { name: obsInfo.value?.scene ?? 'OBS Virtual Camera', source: 'obs' })
+  } else {
+    if (connected.value) broadcastEvent('camera_connected', { name: cameraInfo.value?.name ?? '', source: src })
+  }
   if (obsConnected.value) broadcastEvent('obs_connected', { scene: obsInfo.value?.scene ?? '' })
 })
 // Initialize Pusher client (listen for remote triggers)
@@ -421,8 +436,14 @@ onMounted(() => {
       },
       onReload: () => reloadApp(),
       onRequestState: () => {
-        if (connected.value) broadcastEvent('camera_connected', { name: cameraInfo.value?.name ?? '' })
-        else broadcastEvent('camera_disconnected')
+        const src = getCaptureSource()
+        if (src === 'obs') {
+          if (obsConnected.value) broadcastEvent('camera_connected', { name: obsInfo.value?.scene ?? 'OBS Virtual Camera', source: 'obs' })
+          else broadcastEvent('camera_disconnected', { source: 'obs' })
+        } else {
+          if (connected.value) broadcastEvent('camera_connected', { name: cameraInfo.value?.name ?? '', source: src })
+          else broadcastEvent('camera_disconnected', { source: src })
+        }
         if (obsConnected.value) broadcastEvent('obs_connected', { scene: obsInfo.value?.scene ?? '' })
         else broadcastEvent('obs_disconnected')
         if (liveViewRef.value?.active) broadcastEvent('feed_started', { device: '' })
