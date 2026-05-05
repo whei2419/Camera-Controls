@@ -34,6 +34,7 @@ export const remoteSite = Object.freeze({
   uploadVideoChunk: `${appBaseUrl}/api/upload-video/chunk`,
   uploadVideoAssemble: `${appBaseUrl}/api/upload-video/assemble`,
   uploadVideoChunked: `${appBaseUrl}/api/upload-video/chunked`, // New: laravel-chunk-upload
+  settings: `${appBaseUrl}/api/settings`,
 })
 
 /** Multipart field name for `upload-capture` — must match Laravel `$request->file(...)` key. */

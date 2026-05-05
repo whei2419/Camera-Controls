@@ -5,6 +5,7 @@ import RecordingSettings from './RecordingSettings.vue'
 import PrinterSettings from './PrinterSettings.vue'
 import CameraConnect from './CameraConnect.vue'
 import { appBaseUrl } from '../config/remoteSite.js'
+import { broadcastEvent } from '../lib/pusherClient.js'
 
 const props = defineProps({
   show: Boolean,
@@ -14,7 +15,7 @@ const props = defineProps({
   obsInstance: Object,
 })
 
-const emit = defineEmits(['close', 'obs-connected', 'obs-disconnected', 'camera-connected'])
+const emit = defineEmits(['close', 'obs-connected', 'obs-disconnected', 'camera-connected', 'duration-saved'])
 
 const tab = ref('obs') // 'obs' | 'files' | 'printer' | 'camera' | 'server'
 
@@ -86,9 +87,15 @@ async function saveRecordingDuration() {
     const persisted = normalizeRecordingDuration(config?.recordingDurationSec)
     recordingDurationSec.value = persisted
     localStorage.setItem(RECORDING_DURATION_KEY, String(persisted))
-    recordingMsg.value = 'Saved'
-  } catch {
-    recordingMsg.value = 'Save failed'
+    emit('duration-saved', persisted)
+
+    // Sync duration to the microsite via the existing broadcast channel
+    await broadcastEvent('setting_update', { recording_duration_sec: persisted })
+
+    recordingMsg.value = 'Saved ✓ (synced)'
+  } catch (err) {
+    console.error('[saveRecordingDuration]', err)
+    recordingMsg.value = `Save failed: ${err?.message ?? String(err)}`
   } finally {
     recordingSaving.value = false
     setTimeout(() => { recordingMsg.value = '' }, 2000)

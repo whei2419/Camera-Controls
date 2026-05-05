@@ -595,7 +595,8 @@ function reloadApp() {
   <!-- ── Settings Modal ───────────────────────────────────────── -->
   <SettingsModal :show="showSettingsModal" :obs-connected="obsConnected" :obs-info="obsInfo" :connected="connected"
     :obs-instance="obsInfo?.obs ?? null" @close="showSettingsModal = false; refreshThumbnails()"
-    @obs-connected="onOBSConnected" @obs-disconnected="onOBSDisconnected" @camera-connected="onConnected" />
+    @obs-connected="onOBSConnected" @obs-disconnected="onOBSDisconnected" @camera-connected="onConnected"
+    @duration-saved="secs => { recordingDurationSec = secs }" />
 
   <!-- ── Gallery Screen ───────────────────────────────────────── -->
   <GalleryScreen ref="galleryScreenRef" :show="showGalleryScreen" :image-folder="imageFolder"
